@@ -37,6 +37,7 @@ from crawfish.definition.types import (
     Definition,
     DefinitionAssets,
     DefinitionRef,
+    MCPConnection,
     Prompt,
     TeamSpec,
 )
@@ -142,7 +143,18 @@ def load_definition(path: str | Path) -> Definition:
     policy_names = {p.name for p in policies}
 
     skills = sorted(p.name for p in (root / "skills").glob("*.md"))
-    mcp = sorted(p.stem for p in (root / "mcp").glob("*.py") if not p.stem.startswith("_"))
+
+    # -- discover MCP connections (module-level MCPConnection instances) ------
+    mcp_connections: list[MCPConnection] = []
+    for mcp_file in sorted((root / "mcp").glob("*.py")):
+        if mcp_file.stem.startswith("_"):
+            continue
+        module = _import_module(mcp_file, f"_craw_mcp_{mcp_file.stem}")
+        for value in vars(module).values():
+            if isinstance(value, MCPConnection):
+                mcp_connections.append(value)
+    mcp_tool_names = [t for conn in mcp_connections for t in conn.tools]
+    all_tool_names = list(tool_names) + mcp_tool_names  # local + MCP-provided tools
 
     # -- build the team ------------------------------------------------------
     agents: list[AgentSpec] = []
@@ -151,10 +163,11 @@ def load_definition(path: str | Path) -> Definition:
     for agent_file in sorted((root / "agents").glob("*.md")):
         agents.append(_agent_from_md(agent_file.stem, agent_file.read_text()))
 
-    # tools with no explicit per-agent restriction are available to all (no wiring)
+    # tools with no explicit per-agent restriction get all available (no wiring):
+    # local tools + connected MCP tools.
     for spec in agents:
         if not spec.tools:
-            spec.tools = list(tool_names)
+            spec.tools = list(all_tool_names)
 
     # -- definition.py: typed IO, deps, optional team/version override -------
     inputs: list[Parameter] = []
@@ -204,7 +217,7 @@ def load_definition(path: str | Path) -> Definition:
         version = Version(major=version.major, minor=version.minor, sha=sha)
 
     # -- validate bindings (fail at load) ------------------------------------
-    available_tools = set(tool_names)
+    available_tools = set(all_tool_names)
     for spec in team.agents:
         for tool in spec.tools:
             if tool not in available_tools:
@@ -227,7 +240,7 @@ def load_definition(path: str | Path) -> Definition:
         mds=([instructions.name] if instructions.exists() else [])
         + [f"agents/{a.name}" for a in sorted((root / "agents").glob("*.md"))],
         skills=skills,
-        mcp=mcp,
+        mcp=mcp_connections,
         policies=policies,
     )
 

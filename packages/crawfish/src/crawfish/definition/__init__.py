@@ -10,6 +10,7 @@ from crawfish.definition.types import (
     DefinitionAssets,
     DefinitionRef,
     MarketplacePackage,
+    MCPConnection,
     Prompt,
     TeamSpec,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "DefinitionAssets",
     "Definition",
     "MarketplacePackage",
+    "MCPConnection",
     "load_definition",
     "DefinitionLoadError",
 ]

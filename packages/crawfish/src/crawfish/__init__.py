@@ -33,6 +33,7 @@ from crawfish.definition import (
     DefinitionLoadError,
     DefinitionRef,
     MarketplacePackage,
+    MCPConnection,
     Prompt,
     TeamSpec,
     load_definition,
@@ -103,6 +104,7 @@ __all__ = [
     "DefinitionRef",
     "DefinitionAssets",
     "MarketplacePackage",
+    "MCPConnection",
     "load_definition",
     "DefinitionLoadError",
     # runtime

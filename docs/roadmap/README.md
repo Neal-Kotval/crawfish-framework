@@ -27,7 +27,7 @@ Status legend: ✅ done · 🔄 in progress · ⛔ blocked · ⬜ not started
 | 7 | CRA-112 | AgentRuntime backends + `craw dev` | ✅ |
 | 8 | CRA-135 | Multi-agent team coordination (TeamSpec) | ✅ |
 | 9 | CRA-138 | Context-window management (pluggable) | ✅ |
-| 10 | CRA-116 | MCP tool access in Definitions | 🔄 |
+| 10 | CRA-116 | MCP tool access in Definitions | ✅ |
 
 ## M2 — Nodes & a Run
 *Exit: a single Run executes end to end and produces a typed Output; all IO nodes exist.*

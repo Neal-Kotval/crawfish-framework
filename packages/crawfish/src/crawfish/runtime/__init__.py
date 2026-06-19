@@ -23,6 +23,7 @@ from crawfish.runtime.context_strategy import (
     manage_context,
     resolve_strategy,
 )
+from crawfish.runtime.mcp import allowed_mcp_tools, build_mcp_config, resolve_secret
 from crawfish.runtime.mock import MockRuntime
 from crawfish.runtime.prompt import compile_prompt, pick_agent, split_inputs
 from crawfish.runtime.replay import CassetteMiss, RecordReplayRuntime
@@ -61,4 +62,8 @@ __all__ = [
     "estimate_tokens",
     "resolve_strategy",
     "manage_context",
+    # mcp (CRA-116)
+    "build_mcp_config",
+    "allowed_mcp_tools",
+    "resolve_secret",
 ]

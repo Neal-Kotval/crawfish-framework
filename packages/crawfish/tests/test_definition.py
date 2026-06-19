@@ -36,7 +36,7 @@ def test_full_fixture_compiles_all_artifacts(tmp_path: Path) -> None:
     assert d.team.lead == "lead"
     # assets
     assert d.assets.skills == ["triage.md"]
-    assert d.assets.mcp == ["linear"]
+    assert {c.name for c in d.assets.mcp} == {"linear"}
     assert {p.name for p in d.assets.policies} == {"spend_cap"}
 
 

@@ -27,6 +27,7 @@ __all__ = [
     "DefinitionAssets",
     "Definition",
     "MarketplacePackage",
+    "MCPConnection",
 ]
 
 
@@ -67,12 +68,29 @@ class DefinitionRef(BaseModel):
     version: str  # e.g. "0.2" or "0.1-sha"
 
 
+class MCPConnection(BaseModel):
+    """An MCP server connection authored in ``mcp/*.py`` (CRA-116).
+
+    ``auth`` is a **secret reference** (an env-var name), never an inline credential —
+    resolved at run time and injected into the server env, never into the prompt.
+    ``tools`` lists the tool names the connection exposes (so the per-agent allowlist
+    stays checkable).
+    """
+
+    name: str
+    description: str = ""
+    command: list[str] | None = None  # stdio transport: argv
+    url: str | None = None  # http/sse transport
+    auth: str | None = None  # secret reference (env var name) — by reference only
+    tools: list[str] = Field(default_factory=list)  # exposed tool names
+
+
 class DefinitionAssets(BaseModel):
     code: list[str] = Field(default_factory=list)  # python package modules
     mds: list[str] = Field(default_factory=list)
     plugins: list[str] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
-    mcp: list[str] = Field(default_factory=list)
+    mcp: list[MCPConnection] = Field(default_factory=list)
     policies: list[Policy] = Field(default_factory=list)
 
 

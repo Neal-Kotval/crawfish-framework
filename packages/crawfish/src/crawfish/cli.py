@@ -36,7 +36,7 @@ def _cmd_dev(args: argparse.Namespace) -> int:
     (zero key, zero budget) — the basis for fixtures + record/replay hot-reload."""
     from crawfish.core.context import RunContext
     from crawfish.definition import Definition
-    from crawfish.runtime import MockRuntime, RunRequest
+    from crawfish.runtime import MockRuntime, run_team
     from crawfish.store import SqliteStore
 
     definition = Definition.from_package(args.path)
@@ -47,7 +47,9 @@ def _cmd_dev(args: argparse.Namespace) -> int:
 
     async def _go() -> str:
         ctx = RunContext(store=SqliteStore())
-        result = await MockRuntime().run(RunRequest(definition=definition, inputs=inputs), ctx)
+        # Mock runtime + the team coordinator: zero key, zero budget, exercises the
+        # full coordination topology. CRA-112's record/replay swaps in for real runs.
+        result = await run_team(definition, inputs, ctx, MockRuntime())
         return result.text
 
     print(asyncio.run(_go()))

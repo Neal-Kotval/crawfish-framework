@@ -21,6 +21,7 @@ from crawfish.runtime.base import (
     RuntimeEvent,
     ToolCall,
 )
+from crawfish.runtime.mcp import allowed_mcp_tools, build_mcp_config
 from crawfish.runtime.prompt import compile_prompt, pick_agent
 
 __all__ = ["CommandRuntime", "Transport"]
@@ -90,7 +91,17 @@ class CommandRuntime(AgentRuntime):
         model = self._resolve_model(request)
         prompt = compile_prompt(request.definition, agent, request.inputs)
 
-        stdout = await self._transport(self._build_args(request, model), prompt)
+        args = self._build_args(request, model)
+        if request.definition.assets.mcp:
+            # Expose connected MCP servers' tools; gate by the agent's allowlist.
+            # Secrets are injected into the server env by reference, never the prompt.
+            config = build_mcp_config(request.definition.assets.mcp)
+            args += ["--mcp-config", json.dumps(config)]
+            allowed = allowed_mcp_tools(request.definition, agent)
+            if allowed:
+                args += ["--allowedTools", ",".join(allowed)]
+
+        stdout = await self._transport(args, prompt)
         result = _parse_stream_json(stdout, model)
 
         ctx.cost_budget.charge(result.cost_usd)
