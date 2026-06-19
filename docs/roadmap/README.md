@@ -34,11 +34,11 @@ Status legend: ✅ done · 🔄 in progress · ⛔ blocked · ⬜ not started
 
 | # | Issue | Title | Status |
 |---|-------|-------|--------|
-| 11 | CRA-103 | Source — single/multi-item fan-out | ⬜ |
-| 12 | CRA-104 | Sink — idempotency, approval gate, static targets | ⬜ |
-| 13 | CRA-105 | Filter — routes / narrows an Output | ⬜ |
-| 14 | CRA-123 | Memory / state primitive | ⬜ |
-| 15 | CRA-106 | Run — durable single-task execution + telemetry | ⬜ |
+| 11 | CRA-103 | Source — single/multi-item fan-out | ✅ |
+| 12 | CRA-104 | Sink — idempotency, approval gate, static targets | ✅ |
+| 13 | CRA-105 | Filter — routes / narrows an Output | ✅ |
+| 14 | CRA-123 | Memory / state primitive | ✅ |
+| 15 | CRA-106 | Run — durable single-task execution + telemetry | 🔄 |
 
 ## M3 — Pipelines (map / reduce / branch)
 *Exit: a multi-stage pipeline with fan-out, fan-in, and branching runs durably with retries.*

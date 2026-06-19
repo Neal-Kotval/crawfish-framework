@@ -39,6 +39,23 @@ from crawfish.definition import (
     load_definition,
 )
 from crawfish.engine import Engine, run_pipeline
+from crawfish.memory import Memory
+from crawfish.nodes import (
+    ApprovalRequired,
+    Filter,
+    GitHubPRSink,
+    LinearSink,
+    PullRequestSource,
+    RepoSource,
+    Sink,
+    Source,
+    TargetMustBeStaticError,
+    fan_out,
+    field_equals,
+    field_matches,
+    limit,
+    title_contains,
+)
 from crawfish.output import Output, WireError, check_wire, output_satisfies_inputs
 from crawfish.runtime import (
     AgentRuntime,
@@ -118,4 +135,20 @@ __all__ = [
     "RunResult",
     "RuntimeEvent",
     "get_runtime",
+    # nodes (M2)
+    "Source",
+    "RepoSource",
+    "PullRequestSource",
+    "fan_out",
+    "Sink",
+    "LinearSink",
+    "GitHubPRSink",
+    "TargetMustBeStaticError",
+    "ApprovalRequired",
+    "Filter",
+    "title_contains",
+    "field_equals",
+    "field_matches",
+    "limit",
+    "Memory",
 ]
