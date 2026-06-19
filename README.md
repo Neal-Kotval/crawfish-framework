@@ -8,10 +8,20 @@ Think *dbt / Airflow for agents*, not another chatbot SDK.
 
 ## Quick start
 
+This repo uses [`just`](https://github.com/casey/just) as its task runner — run `just`
+to see every recipe.
+
 ```bash
-uv sync
-uv run craw run        # runs the engine bootstrap end to end
-uv run pytest -q       # the test suite
+just deps              # install the workspace + dev deps (uv sync)
+just demo              # run the demo end to end (zero key, mock runtime)
+just check             # lint + typecheck + the test suite
+```
+
+Or drive the CLI directly:
+
+```bash
+uv run craw init my-app                                  # scaffold a project
+uv run craw dev my-app/definitions/triage-bot -i project=acme -i "ticket_body=login broken"
 ```
 
 ## Docs
@@ -29,7 +39,7 @@ Aggregator reduces, a Router branches, and a Sink writes — typed, versioned,
 benchmarked, with retries/dead-letter and crash-resume. `ruff` + `mypy --strict` clean;
 255 tests green; docs build as a MkDocs site.
 
-Browse the docs: `uv run --group docs mkdocs serve`.
+Browse the docs locally: `just docs` (serves at http://127.0.0.1:8000).
 
 See [CLAUDE.md](CLAUDE.md) for development guidance and [docs/roadmap](docs/roadmap/README.md)
 for the per-issue status.
