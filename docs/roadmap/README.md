@@ -59,11 +59,11 @@ Status legend: ✅ done · 🔄 in progress · ⛔ blocked · ⬜ not started
 
 | # | Issue | Title | Status |
 |---|-------|-------|--------|
-| 24 | CRA-110 | Metrics, Rubrics & Benchmarks | ⬜ |
-| 25 | CRA-139 | Eval data lifecycle | ⬜ |
-| 26 | CRA-111 | Company Brain | ⬜ |
-| 27 | CRA-121 | Cost preview + budgets | ⬜ |
-| 28 | CRA-120 | Run inspector + streaming | ⬜ |
+| 24 | CRA-110 | Metrics, Rubrics & Benchmarks | ✅ |
+| 25 | CRA-139 | Eval data lifecycle | 🔄 |
+| 26 | CRA-111 | Company Brain | ⏸️ deferred → Phase-2 hub (CRA-125); built, unwired |
+| 27 | CRA-121 | Cost preview + budgets | ✅ |
+| 28 | CRA-120 | Run inspector + streaming | ✅ |
 
 ## M5 — Authoring, packaging & ship
 *Exit: `pip install` → `craw init` → 5-min wow; `craw build` → container; docs complete; tests, secrets, API-stability contract.*

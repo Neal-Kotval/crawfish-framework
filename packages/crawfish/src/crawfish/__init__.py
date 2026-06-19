@@ -32,6 +32,14 @@ from crawfish.core import (
     new_id,
     parameters_compatible,
 )
+from crawfish.cost import (
+    Budget,
+    BudgetState,
+    CostEstimate,
+    CostMeter,
+    estimate_cost,
+    spent_today,
+)
 from crawfish.definition import (
     AgentSpec,
     Coordination,
@@ -54,8 +62,20 @@ from crawfish.executor import (
     ExecutionPlan,
     Roadmap,
 )
+from crawfish.inspector import RunReport, format_report, inspect_run, tail_events
 from crawfish.ledger import ExecState, ExecutionLedger
 from crawfish.memory import Memory
+from crawfish.metrics import (
+    Benchmark,
+    Metric,
+    Rubric,
+    compare,
+    confidence_threshold,
+    field_present,
+    is_nonempty,
+    is_regression,
+    output_number,
+)
 from crawfish.nodes import (
     Aggregator,
     ApprovalRequired,
@@ -215,4 +235,24 @@ __all__ = [
     "ItemResult",
     "ItemStatus",
     "Workflow",
+    # measurement (M4)
+    "Metric",
+    "Rubric",
+    "Benchmark",
+    "output_number",
+    "field_present",
+    "is_nonempty",
+    "confidence_threshold",
+    "compare",
+    "is_regression",
+    "estimate_cost",
+    "CostEstimate",
+    "Budget",
+    "BudgetState",
+    "CostMeter",
+    "spent_today",
+    "inspect_run",
+    "tail_events",
+    "format_report",
+    "RunReport",
 ]
