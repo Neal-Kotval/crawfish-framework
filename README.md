@@ -1,6 +1,6 @@
 # Crawfish
 
-[![CI](https://github.com/crawfish/crawfish-framework/actions/workflows/ci.yml/badge.svg)](https://github.com/crawfish/crawfish-framework/actions/workflows/ci.yml)
+[![CI](https://github.com/Neal-Kotval/crawfish-framework/actions/workflows/ci.yml/badge.svg)](https://github.com/Neal-Kotval/crawfish-framework/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/crawfish.svg)](https://pypi.org/project/crawfish/)
 [![Python](https://img.shields.io/pypi/pyversions/crawfish.svg)](https://pypi.org/project/crawfish/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)

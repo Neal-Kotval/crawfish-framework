@@ -1,6 +1,6 @@
 # crawfish-slack
 
-A Slack message **sink** for [Crawfish](https://github.com/crawfish/crawfish-framework) —
+A Slack message **sink** for [Crawfish](https://github.com/Neal-Kotval/crawfish-framework) —
 and the worked example every new connector copies.
 
 It posts a message to a static Slack channel, holds its bot token **by reference**
@@ -16,4 +16,4 @@ sink = SlackSink(config={"channel": "#alerts", "credential_ref": "SLACK_BOT_TOKE
 Installing this package registers the sink through a real entry point, so
 `Registry.discover()` finds it as `("sink", "slack")` with zero wiring.
 
-See the full walkthrough: **[Contributing a connector](https://github.com/crawfish/crawfish-framework/blob/main/docs/guide/contributing-a-connector.md)**.
+See the full walkthrough: **[Contributing a connector](https://github.com/Neal-Kotval/crawfish-framework/blob/main/docs/guide/contributing-a-connector.md)**.

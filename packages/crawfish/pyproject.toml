@@ -31,11 +31,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/crawfish/crawfish-framework"
-Documentation = "https://github.com/crawfish/crawfish-framework#readme"
-Repository = "https://github.com/crawfish/crawfish-framework"
-Issues = "https://github.com/crawfish/crawfish-framework/issues"
-Changelog = "https://github.com/crawfish/crawfish-framework/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/Neal-Kotval/crawfish-framework"
+Documentation = "https://github.com/Neal-Kotval/crawfish-framework#readme"
+Repository = "https://github.com/Neal-Kotval/crawfish-framework"
+Issues = "https://github.com/Neal-Kotval/crawfish-framework/issues"
+Changelog = "https://github.com/Neal-Kotval/crawfish-framework/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 otel = ["opentelemetry-api>=1.25", "opentelemetry-sdk>=1.25"]
