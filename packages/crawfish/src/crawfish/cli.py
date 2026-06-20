@@ -203,10 +203,15 @@ def _project_name(project_dir: str) -> str:
 
 def _cmd_deploy(args: argparse.Namespace) -> int:
     from crawfish.deploy import deploy
+    from crawfish.manage import register_deployment
 
     name = args.name or _project_name(args.dir)
     entry = deploy(args.dir, name=name, store=_open_store(args.dir), schedule=args.schedule)
-    when = f"on schedule {args.schedule!r}" if args.schedule else "continuously"
+    # Record it in the global index so `craw manage` (no --dir) finds it from anywhere.
+    register_deployment(name, str(Path(args.dir).resolve()))
+    # Reflect the *resolved* schedule (entry.schedule), which may come from the project's
+    # declared TRIGGER even when --schedule was omitted.
+    when = f"on schedule {entry.schedule!r}" if entry.schedule else "continuously"
     print(f"deployed {name} (pid {entry.pid}, session {entry.session}) — runs {when}")
     print(f"  logs: {entry.log_path}")
     print("  manage: craw manage    dashboard: craw visualize")
@@ -217,19 +222,40 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
 def _cmd_manage(args: argparse.Namespace) -> int:
     from crawfish.deploy import stop
     from crawfish.inspector import tail_events
-    from crawfish.manage import format_table, manage_list, restart_target
+    from crawfish.manage import (
+        PipelineStatus,
+        format_table,
+        global_manage_list,
+        interactive_manage,
+        manage_list,
+        resolve_deployment_dir,
+        restart_target,
+        store_for_dir,
+    )
 
-    store = _open_store(args.dir)
-    if args.action == "stop":
-        ok = stop(args.target, store=store)
-        print(f"stopped {args.target}" if ok else f"no such pipeline: {args.target}")
-        return 0 if ok else 1
-    if args.action == "restart":
-        ok = restart_target(args.target, store=store)
-        print(f"restarted {args.target}" if ok else f"no such pipeline: {args.target}")
-        return 0 if ok else 1
-    if args.action == "logs":
-        for row in manage_list(store):
+    # --dir scopes to one project; omitting it manages ALL deployments via the global index.
+    scoped = args.dir is not None
+
+    def _store_for(name: str | None) -> Store | None:
+        if scoped:
+            return _open_store(args.dir)
+        target_dir = resolve_deployment_dir(name) if name else None
+        return store_for_dir(target_dir) if target_dir else None
+
+    if args.action in ("stop", "restart", "logs"):
+        store = _store_for(args.target)
+        if store is None:
+            print(f"no such pipeline: {args.target}")
+            return 1
+        if args.action == "stop":
+            ok = stop(args.target, store=store)
+            print(f"stopped {args.target}" if ok else f"no such pipeline: {args.target}")
+            return 0 if ok else 1
+        if args.action == "restart":
+            ok = restart_target(args.target, store=store)
+            print(f"restarted {args.target}" if ok else f"no such pipeline: {args.target}")
+            return 0 if ok else 1
+        for row in manage_list(store):  # logs
             if row.name == args.target:
                 for ri in row.runs:
                     for event in tail_events(store, ri.run_id, after_seq=-1):
@@ -237,7 +263,15 @@ def _cmd_manage(args: argparse.Namespace) -> int:
                 return 0
         print(f"no such pipeline: {args.target}")
         return 1
-    print(format_table(manage_list(store)))
+
+    # Default (list): global view unless --dir scopes it.
+    def _rows() -> list[PipelineStatus]:
+        return manage_list(_open_store(args.dir)) if scoped else global_manage_list()
+
+    # Interactive TUI on a real terminal; static table when piped/redirected or --plain.
+    if not getattr(args, "plain", False) and sys.stdout.isatty():
+        return interactive_manage(_rows)
+    print(format_table(_rows(), show_dir=not scoped))
     return 0
 
 
@@ -352,7 +386,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="management action",
     )
     p.add_argument("target", nargs="?", default=None, help="pipeline name (for stop/restart/logs)")
-    p.add_argument("--dir", default=".", help="project directory")
+    p.add_argument(
+        "--dir",
+        default=None,
+        help="project directory to scope to (omit to manage ALL deployments globally)",
+    )
+    p.add_argument(
+        "--plain", action="store_true", help="print the static table instead of the interactive TUI"
+    )
     p.set_defaults(func=_cmd_manage)
 
     p = sub.add_parser("visualize", help="serve the localhost dashboard (loopback only)")

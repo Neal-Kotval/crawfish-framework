@@ -36,7 +36,7 @@ from crawfish.core.ids import new_id
 from crawfish.ledger import ExecState, ExecutionLedger
 from crawfish.observe import ObserverEvent, ObserverSurface, RunInfo, Severity
 from crawfish.secrets import redact
-from crawfish.triggers import CronSchedule
+from crawfish.triggers import parse_schedule
 
 if TYPE_CHECKING:
     from crawfish.store.base import Store
@@ -48,6 +48,8 @@ __all__ = [
     "Supervisor",
     "RunFn",
     "default_run_fn",
+    "load_workflow",
+    "load_trigger",
     "deploy",
     "stop",
     "supervise_main",
@@ -150,6 +152,97 @@ def default_run_fn(project_dir: str | Path) -> RunFn:
     return _run
 
 
+def _import_project(project_dir: str | Path) -> object | None:
+    """Import a project's ``pipeline.py`` and return the module (or ``None``).
+
+    The project dir goes on ``sys.path`` so the module's sibling imports resolve. Any
+    import error yields ``None`` rather than propagating — a broken project must never
+    take down the supervisor or the manage view.
+    """
+    import importlib.util
+    import sys as _sys
+
+    root = Path(project_dir).resolve()
+    pipeline_py = root / "pipeline.py"
+    if not pipeline_py.exists():
+        return None
+    if str(root) not in _sys.path:
+        _sys.path.insert(0, str(root))
+    try:
+        spec = importlib.util.spec_from_file_location(
+            f"_crawfish_pipeline_{root.name}", pipeline_py
+        )
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception:  # noqa: BLE001
+        return None
+    return module
+
+
+def load_workflow(project_dir: str | Path) -> object | None:
+    """Discover a project's deployable pipeline by convention.
+
+    A deployable project ships a ``pipeline.py`` at its root exposing
+    ``build_pipeline() -> Workflow``. We import that file and call the factory. Any
+    failure — no file, no factory, an import/build error, or a non-Workflow return —
+    yields ``None`` so the caller can fall back to the bootstrap rather than crash the
+    daemon. Returns a fresh ``Workflow`` each call (one per cycle), so in-memory node
+    state never accretes across runs.
+    """
+    from crawfish.workflow import Workflow
+
+    module = _import_project(project_dir)
+    if module is None:
+        return None
+    builder = getattr(module, "build_pipeline", None)
+    if not callable(builder):
+        return None
+    try:
+        workflow = builder()
+    except Exception:  # noqa: BLE001 — a broken project must not take down the supervisor
+        return None
+    return workflow if isinstance(workflow, Workflow) else None
+
+
+def load_trigger(project_dir: str | Path) -> str | None:
+    """Discover a project's declared firing cadence as a cron string, or ``None``.
+
+    A project declares *how it fires* as a first-class trigger object — a module-level
+    ``TRIGGER`` (a :class:`~crawfish.triggers.CronTrigger`, exposing ``.schedule``) — or
+    a plain ``SCHEDULE`` cron string. ``craw deploy`` uses this when ``--schedule`` is
+    omitted, so cadence lives in the project, not the command line. Returns ``None`` for
+    a project with no cron trigger (e.g. webhook-driven, or none declared).
+    """
+    module = _import_project(project_dir)
+    if module is None:
+        return None
+    trigger = getattr(module, "TRIGGER", None)
+    schedule = getattr(trigger, "schedule", None)
+    if isinstance(schedule, str):
+        return schedule
+    schedule = getattr(module, "SCHEDULE", None)
+    return schedule if isinstance(schedule, str) else None
+
+
+def _discover_run_fn(project_dir: str | Path) -> RunFn:
+    """The deployed cycle: run the project's discovered Workflow, else the bootstrap."""
+    import asyncio
+
+    root = Path(project_dir).resolve()
+    if load_workflow(root) is None:
+        return default_run_fn(root)
+
+    def _run(ctx: RunContext) -> None:
+        workflow = load_workflow(root)  # fresh per cycle
+        if workflow is None:
+            return
+        asyncio.run(workflow.run(ctx=ctx))  # type: ignore[attr-defined]
+
+    return _run
+
+
 class Supervisor:
     """The always-on loop: schedule → fire → record, with ledger-backed resume.
 
@@ -173,7 +266,7 @@ class Supervisor:
         self.name = name
         self.store = store
         self.run_fn = run_fn
-        self.schedule = CronSchedule(schedule) if schedule else None
+        self.schedule = parse_schedule(schedule) if schedule else None
         self.org_id = org_id
         self.version = version
         self.backend = backend
@@ -345,9 +438,15 @@ def deploy(
     Validates the schedule up front, spawns the detached ``craw _supervise`` child
     (argv carries only the pipeline name + dir — never a secret), and writes the
     deploy-registry entry ``craw manage`` reads.
+
+    When ``schedule`` is omitted, the project's own declared trigger (a module-level
+    ``TRIGGER``/``SCHEDULE`` in its ``pipeline.py``) is used — so cadence lives in the
+    project, not the command line.
     """
+    if schedule is None:
+        schedule = load_trigger(project_dir)
     if schedule is not None:
-        CronSchedule(schedule)  # fail fast on a bad cron expression
+        parse_schedule(schedule)  # fail fast on a bad cron / interval expression
     root = Path(project_dir).resolve()
     spawn = spawn or _default_spawn
     registry = DeployRegistry(store, org_id=org_id)
@@ -426,6 +525,6 @@ def supervise_main(name: str, project_dir: str | Path, schedule: str | None = No
     db.parent.mkdir(parents=True, exist_ok=True)
     secrets = SecretManager(env=None)
     store = ScrubbingStore(SqliteStore(db), secrets=secrets.values)
-    sup = Supervisor(name, store, default_run_fn(root), schedule=schedule, secrets=secrets.values)
+    sup = Supervisor(name, store, _discover_run_fn(root), schedule=schedule, secrets=secrets.values)
     sup.serve()
     return 0

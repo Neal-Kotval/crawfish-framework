@@ -23,6 +23,9 @@ __all__ = [
     "CronTrigger",
     "CronSchedule",
     "Cron",
+    "IntervalTrigger",
+    "IntervalSchedule",
+    "parse_schedule",
     "WebhookTrigger",
     "verify_webhook",
 ]
@@ -143,6 +146,76 @@ class WebhookTrigger(Trigger):
 
 # Ergonomic alias so observer/poll call sites read `poll=Cron("*/5 * * * *")`.
 Cron = CronSchedule
+
+
+class IntervalSchedule:
+    """Fire every ``seconds`` — a fixed interval, with sub-minute resolution.
+
+    Cron is minute-resolution and can't express "every 30 seconds"; this can. It is
+    serialised as the string ``"@every <n>s"`` (see :func:`parse_schedule`), so it flows
+    through the same single ``schedule`` channel that cron does. ``matches`` is always
+    true (the supervisor sleeps ``next_after - now`` between cycles, so the interval is
+    what governs cadence).
+    """
+
+    def __init__(self, seconds: float) -> None:
+        if seconds <= 0:
+            raise ValueError(f"interval seconds must be positive, got {seconds!r}")
+        self.seconds = float(seconds)
+        n: float | int = int(self.seconds) if self.seconds.is_integer() else self.seconds
+        self.expr = f"@every {n}s"
+
+    def matches(self, dt: datetime) -> bool:
+        """Always true — the supervisor's inter-cycle sleep enforces the interval."""
+        return True
+
+    def next_after(self, dt: datetime) -> datetime:
+        """One interval after ``dt``."""
+        return dt + timedelta(seconds=self.seconds)
+
+
+class IntervalTrigger(Trigger):
+    """Fire a run every ``seconds`` (CRA-115). Simpler than cron for sub-minute cadence.
+
+    ``TRIGGER = IntervalTrigger(seconds=30)`` reads far more plainly than a cron string
+    — and unlike cron it can fire faster than once a minute.
+    """
+
+    def __init__(self, *, seconds: float) -> None:
+        self.id = new_id()
+        self.kind = "interval"
+        self.seconds = float(seconds)
+
+    @property
+    def schedule(self) -> str:
+        """The ``"@every <n>s"`` string ``craw deploy`` carries for this trigger."""
+        return IntervalSchedule(self.seconds).expr
+
+    def describe(self) -> dict[str, JSONValue]:
+        """Round-trippable description: kind + schedule (CRA-115)."""
+        return {"id": self.id, "kind": self.kind, "schedule": self.schedule}
+
+
+def _parse_duration(spec: str) -> float:
+    """Parse ``"30s"`` / ``"5m"`` / ``"2h"`` / bare seconds (``"90"``) to seconds."""
+    spec = spec.strip()
+    units = {"s": 1.0, "m": 60.0, "h": 3600.0}
+    if spec and spec[-1] in units:
+        return float(spec[:-1]) * units[spec[-1]]
+    return float(spec)
+
+
+def parse_schedule(spec: str) -> CronSchedule | IntervalSchedule:
+    """Parse a schedule string into a cron or interval schedule.
+
+    ``"@every 30s"`` (or ``5m`` / ``2h`` / bare seconds) → :class:`IntervalSchedule`;
+    anything else → a 5-field :class:`CronSchedule`. Both expose ``matches`` /
+    ``next_after``, so the supervisor and deploy treat them uniformly.
+    """
+    spec = spec.strip()
+    if spec.startswith("@every"):
+        return IntervalSchedule(_parse_duration(spec[len("@every") :]))
+    return CronSchedule(spec)
 
 
 def verify_webhook(secret: str, payload: bytes, signature: str) -> bool:
