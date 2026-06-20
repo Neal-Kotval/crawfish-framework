@@ -1,9 +1,9 @@
-# Manage — list and control deployed pipelines
+# Manage deployed pipelines
 
-`craw manage` is the control plane for [deployed](deploy.md) pipelines. It reads the
-**deploy registry** (what is running), the **execution ledger** (run history), and the
-**cost meter** ($ spent), and renders one operator-friendly view. From there you can
-stop, restart, or tail any pipeline by name.
+`craw manage` shows you every [deployed](deploy.md) pipeline in one view. It reads three
+things: the deploy registry (what is running), the execution ledger (run history), and the
+cost meter (what you've spent). From there you can stop, restart, or tail any pipeline by
+name.
 
 ## Command
 
@@ -14,8 +14,8 @@ craw manage restart <name>        # restart the supervisor (re-reads schedule)
 craw manage logs    <name>        # tail the supervisor + run logs
 ```
 
-The bare `craw manage` lists, for each pipeline: **name**, **status**, **uptime**, **last
-run**, **next fire** (for a cron deploy), and **$ today**.
+Run `craw manage` with no arguments and each pipeline gets a row: name, status, uptime,
+last run, next fire (for a cron deploy), and $ today.
 
 ## Worked example
 
@@ -28,7 +28,7 @@ craw manage
 # triage-drain             running   01:09:55  18:21 (ok)      —           $0.07
 ```
 
-`$ TODAY` comes from the cost meter, so you can see spend accrue per pipeline without
+`$ TODAY` comes from the cost meter, so you can watch spend add up per pipeline without
 opening the dashboard. `NEXT FIRE` is blank for a continuous deploy.
 
 Tail a pipeline to watch cycles fire and observer events land:
@@ -40,8 +40,8 @@ craw manage logs crawfish/triage-bot
 # 08:00:05  cycle ok     run=01HZ…  cost=$0.31
 ```
 
-Stop a pipeline (the supervisor exits cleanly; the registry row is marked stopped) and
-restart it to pick up a changed schedule:
+Stop a pipeline and the supervisor exits cleanly, leaving its registry row marked stopped.
+Restart it to pick up a changed schedule:
 
 ```bash
 craw manage stop    crawfish/triage-bot
@@ -50,7 +50,7 @@ craw manage restart crawfish/triage-bot
 
 ## Where the numbers come from
 
-`craw manage` is a pure **read** over three Store-backed surfaces — it never re-runs a
+`craw manage` only reads. It pulls from three Store-backed surfaces and never re-runs a
 pipeline to answer a query:
 
 | Column           | Source                                                  |
@@ -64,8 +64,8 @@ foreground runs share one history.
 
 ## Security
 
-`craw manage` renders the **scrubbed** surfaces only — the registry, ledger, and cost
-meter carry no secret values (secrets are resolved by reference at run time, never
-stored). `logs` tails the already-scrubbed supervisor and run logs. Every row is scoped
+`craw manage` reads scrubbed surfaces only. The registry, ledger, and cost meter hold no
+secret values, because secrets are resolved by reference at run time and never stored.
+`logs` tails the supervisor and run logs, which are already scrubbed. Every row is scoped
 by `org_id`. See the [operations overview](operations.md) and
 [SECURITY.md](../architecture/SECURITY.md).

@@ -1,36 +1,39 @@
 # Crawfish
 
-**Agents for bulk work over your data** — `Source → Batch (fan-out) → Aggregator
-(reduce) → Router (branch) → Sink`, authored as directories and run locally via
-`claude -p` with zero API key. Measured + trustworthy: typed, versioned, benchmarked.
+Crawfish runs agents over your data in bulk: fan a job out across many items, reduce
+the results, branch on them, and write them somewhere. You write each pipeline as a
+folder of files and run it on your own machine with `claude -p` — no API key for the
+dev loop. Runs are typed and versioned, so you can diff and replay them.
 
-Think *dbt / Airflow for agents*, not another chatbot SDK.
+The shape of a pipeline: `Source → Batch → Aggregator → Router → Sink`. If you've used
+dbt or Airflow, the idea is familiar — this is that, for agents.
 
 ## Start here
 
-- **[Getting started](guide/getting-started.md)** — install → first run in minutes
+- **[Getting started](guide/getting-started.md)** — install and run your first agent in a few minutes
 - **[Tutorial](guide/tutorial.md)** — build the triage bot end to end
-- **[Concepts](guide/concepts.md)** — the directory model, pipelines, runtimes, the security boundary
+- **[Concepts](guide/concepts.md)** — the directory model, pipelines, runtimes, and the security boundary
 - **[Cookbook](guide/cookbook.md)** — copy-paste recipes
 - **[API reference](guide/api-reference.md)** — the public surface
 
-## Operate & observe
+## Operate and observe
 
-From runs-once to always-on — deploy, watch, and control pipelines locally.
+Run a pipeline once, or keep it running. These pages cover deploying, watching, and
+controlling pipelines locally.
 
-- **[Operations overview](guide/operations.md)** — the deploy → observe → visualize → manage loop, end to end
+- **[Operations overview](guide/operations.md)** — the deploy → observe → visualize → manage loop
 - **[Deploy](guide/deploy.md)** — `craw deploy`: a detached, scheduled, self-restarting supervisor
-- **[Manage](guide/manage.md)** — `craw manage`: list/stop/restart/logs deployed pipelines
-- **[Observers](guide/observers.md)** — `crawfish.observe`: rule- and LLM-based watchers over the run-info surface
-- **[Visualize](guide/visualize.md)** — `craw visualize`: a loopback-only localhost dashboard
-- **[Project structure](guide/project-structure.md)** — the canonical layout, `[project.paths]`, and `craw doctor`
-- **[Export to Claude Code](guide/claude-code-export.md)** — `craw export --claude-code`: a Definition as a subagent
+- **[Manage](guide/manage.md)** — `craw manage`: list, stop, restart, and tail logs for deployed pipelines
+- **[Observers](guide/observers.md)** — `crawfish.observe`: rule- and LLM-based watchers over a run
+- **[Visualize](guide/visualize.md)** — `craw visualize`: a localhost-only dashboard
+- **[Project structure](guide/project-structure.md)** — the standard layout, `[project.paths]`, and `craw doctor`
+- **[Export to Claude Code](guide/claude-code-export.md)** — `craw export --claude-code`: run a Definition as a subagent
 
 ## Under the hood
 
 - **[Architecture](architecture/ARCHITECTURE.md)** — the three swappable seams · [ADRs](architecture/decisions)
-- **[Security spine](architecture/SECURITY.md)** — the prompt-injection boundary, secrets, taint
-- **[API stability](architecture/API-STABILITY.md)** — semver + deprecation policy
+- **[Security](architecture/SECURITY.md)** — the prompt-injection boundary, secrets, and taint
+- **[API stability](architecture/API-STABILITY.md)** — semver and deprecation policy
 - **[Product](product/PRODUCT.md)** — positioning, hero use case, personas
 - **[Roadmap](roadmap/README.md)** — the Phase-1 plan
 

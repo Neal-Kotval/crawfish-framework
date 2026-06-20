@@ -1,11 +1,10 @@
 # Getting started
 
-Crawfish is **agents for bulk work over your data** —
-`Source → Batch (fan-out) → Aggregator (reduce) → Router (branch) → Sink` — authored
-as directories and run **locally** via `claude -p`. No hosted dependency, no API key
-required for the dev loop. Think dbt/Airflow for agents, not another chatbot SDK.
+Crawfish runs agents over your data in bulk. You write a pipeline as a folder of files —
+`Source → Batch → Aggregator → Router → Sink` — and run it locally with `claude -p`.
+The dev loop needs no hosted service and no API key.
 
-This page gets you from a clean checkout to a running agent team in a few minutes.
+This page takes you from a clean checkout to a running agent team in a few minutes.
 
 ## Install
 
@@ -18,30 +17,30 @@ uv run craw --version
 # crawfish 0.1.0
 ```
 
-`uv sync` installs the workspace, including the `crawfish` package in editable mode and
-the `craw` CLI. (Don't run `uv sync` if your environment already has the dev tools
-installed — `uv run craw --version` is enough to confirm the install.)
+`uv sync` installs the workspace, including the `crawfish` package (editable) and the
+`craw` CLI. If your environment already has the dev tools, you can skip it — `uv run
+craw --version` is enough to confirm the install.
 
-## The zero-key story
+## How runs execute
 
-The agent loop lives behind one seam, `AgentRuntime`, so you choose *how* runs execute:
+The agent loop sits behind one seam, `AgentRuntime`. You pick how runs actually happen:
 
 | Runtime | What it does | Key? | Cost |
 | --- | --- | --- | --- |
 | `MockRuntime` | deterministic canned responses — the dev/test loop | no | $0 |
 | `CommandRuntime` | drives your local `claude -p` subprocess | no | uses your Claude session |
-| `RecordReplayRuntime` | records once, replays from cassettes forever after | no (on replay) | $0 |
+| `RecordReplayRuntime` | records once, replays from cassettes after | no (on replay) | $0 |
 | `ClientRuntime` / `ManagedRuntime` | API key / hosted backends | yes | metered |
 
-The dev loop is **zero key, zero budget**: `MockRuntime` is a pure function of the
-request, so iterating on a Definition never burns money and tests stay deterministic.
-Real runs swap in `CommandRuntime` (your local `claude -p`) — switching dev→prod is a
-runtime swap, not a code change.
+The dev loop costs nothing. `MockRuntime` is a pure function of the request, so
+iterating on a pipeline never spends money and tests stay deterministic. For real runs
+you swap in `CommandRuntime`, which uses your local `claude -p`. Going from dev to prod
+is a runtime swap, not a code change.
 
 ## First run — the no-op pipeline
 
-`craw run` exercises the engine bootstrap end to end. With no project authored yet it
-runs a no-op pipeline, which proves the `Engine → RunContext → Store` path works:
+`craw run` exercises the engine end to end. With no project authored yet it runs a no-op
+pipeline, which confirms the `Engine → RunContext → Store` path works:
 
 ```bash
 uv run craw run
@@ -50,17 +49,16 @@ uv run craw run
 
 ## First real run — `craw dev`
 
-`craw dev` compiles a **Definition directory** and runs its agent team on the
-`MockRuntime` — zero key, zero budget. The repo ships a hero example, `demo/triage-bot`,
-a real compilable Definition that triages a support ticket with a lead agent delegating
-to a classifier and a summarizer:
+`craw dev` compiles a **Definition directory** and runs its agent team on `MockRuntime` —
+no key, no cost. The repo ships an example, `demo/triage-bot`: a lead agent that triages
+a support ticket by delegating to a classifier and a summarizer.
 
 ```bash
 uv run craw dev demo/triage-bot -i project=acme -i ticket_body="login button broken"
 ```
 
-You'll see the lead's combined result, with the classifier and summarizer results threaded
-back in as data (the mock just echoes structured input, so the shape is visible):
+You'll see the lead's combined result, with the classifier and summarizer results
+threaded back in as data (the mock echoes structured input, so the shape is visible):
 
 ```text
 [lead] processed: {"classifier_result": "[classifier] processed: ...",
@@ -68,14 +66,14 @@ back in as data (the mock just echoes structured input, so the shape is visible)
                    "ticket_body": "login button broken"}
 ```
 
-`-i name=value` binds inputs (repeatable). Note `project` is a **static** input (trusted
-config) and `ticket_body` is **fluid** (untrusted per-item data) — that distinction is
-the prompt-injection boundary, explained in [concepts](concepts.md).
+`-i name=value` binds inputs and is repeatable. Note the two kinds: `project` is a
+**static** input (trusted config) and `ticket_body` is **fluid** (untrusted per-item
+data). That distinction is the prompt-injection boundary — see [concepts](concepts.md).
 
 ## Run it for real with `claude -p`
 
-Same Definition, real model — just swap the runtime. `craw dev` is mock-only by design;
-to run against your local Claude, use the API directly:
+Same Definition, real model — you just swap the runtime. `craw dev` is mock-only by
+design, so to run against your local Claude, use the API directly:
 
 ```python
 import asyncio
@@ -93,12 +91,12 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-`CommandRuntime` shells out to your local `claude` binary (`claude -p`) — it uses your
-existing Claude session, so there is no API key to manage.
+`CommandRuntime` shells out to your local `claude` binary (`claude -p`), reusing your
+existing Claude session. There's no API key to manage.
 
 ## Use the core API directly
 
-The primitives are plain, typed Python you can drive without the CLI:
+The primitives are plain, typed Python. You can drive them without the CLI:
 
 ```python
 from crawfish import Flow, Parameter, parameters_compatible, SqliteStore, Version
@@ -122,10 +120,10 @@ store.put_record("definition", "d1", {"name": "clarity"})
 ## What's next
 
 - **[Tutorial](tutorial.md)** — build the triage bot end to end: the directory model,
-  compiling, running a team, wiring a `Source → Batch → Sink` pipeline, measuring with a
-  Rubric.
+  compiling, running a team, wiring a `Source → Batch → Sink` pipeline, and measuring
+  with a Rubric.
 - **[Concepts](concepts.md)** — the directory model, the pipeline, runtimes, the
-  prompt-injection boundary, secrets-by-reference, team coordination, the Store seams.
+  prompt-injection boundary, secrets-by-reference, team coordination, and the Store seams.
 - **[Cookbook](cookbook.md)** — short recipes (fan-out, fan-in, routing, dedup, retries,
   cost preview, eval-as-test, snapshot/replay).
 - **[API reference](api-reference.md)** — the full public surface, auto-generated from
@@ -134,6 +132,6 @@ store.put_record("definition", "d1", {"name": "clarity"})
 ### The CLI today
 
 The M0 CLI ships `craw --version`, `craw run`, and `craw dev <path> -i name=value`. The
-fuller command surface (`init / install / list / freeze / publish / build / test / logs
-/ inspect`) is planned — those are noted as *coming* where relevant
-and are not yet runnable.
+rest of the command surface (`init / install / list / freeze / publish / build / test /
+logs / inspect`) is planned. It's marked *coming* where it appears below and isn't
+runnable yet.

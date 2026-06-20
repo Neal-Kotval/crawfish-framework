@@ -1,16 +1,16 @@
 # Tutorial — build the triage bot
 
-This walkthrough builds the hero example end to end: an agent team that triages support
-tickets, then a fan-out pipeline that runs it over many tickets, writes results to a
-sink, and measures quality with a rubric. Everything runs on `MockRuntime` (zero key,
-zero budget), so you can follow along without spending anything.
+This walkthrough builds the hero example end to end. You start with an agent team that
+triages support tickets. Then you fan it out across many tickets, write the results to a
+sink, and score the quality with a rubric. Everything runs on `MockRuntime`, so there's
+no key to set up and nothing to spend.
 
-The finished Definition ships at `demo/triage-bot/` — open it alongside this page.
+The finished Definition ships at `demo/triage-bot/`. Open it alongside this page.
 
 ## 1. The directory model
 
-A Definition is **authored as a directory** and compiled into a typed object. The
-compiler reads a fixed layout:
+You author a Definition as a directory, and the compiler turns it into a typed object. It
+reads a fixed layout:
 
 ```
 triage-bot/
@@ -31,12 +31,12 @@ Compile contract:
 - `skills/*.md`, `mcp/*.py`, `policies/*.py` → `DefinitionAssets`.
 - `definition.py` → typed `inputs`/`outputs`, `dependencies`, coordination, `lead`.
 
-Broken bindings fail at **load time** — an agent referencing an unknown tool or policy
+Broken bindings fail at load time. An agent that references an unknown tool or policy
 never compiles.
 
 ## 2. The lead agent
 
-`instructions.md` carries the lead's prompt in its body and the team topology in YAML
+`instructions.md` holds the lead's prompt in its body and the team topology in YAML
 front-matter:
 
 ```markdown
@@ -70,8 +70,8 @@ You write a single-sentence summary of a support ticket for a triage queue.
 
 ## 4. The typed IO boundary
 
-`definition.py` declares the typed inputs/outputs and the coordination. This is also
-where the **static-vs-fluid** distinction is set:
+`definition.py` declares the typed inputs and outputs and the coordination. It's also
+where you set the static-vs-fluid distinction:
 
 ```python
 from __future__ import annotations
@@ -88,11 +88,11 @@ lead = "lead"
 ```
 
 - `project` is `Flow.STATIC` — trusted, set once, may be interpolated into instructions.
-- `ticket_body` is fluid by default — **untrusted per-item data**, placed only in a
-  fenced data block the model is told to treat as data, never instructions. This is the
-  prompt-injection boundary (see [concepts](concepts.md)).
-- Setting `lead = "lead"` (a module-level string) tells the compiler the coordinator
-  role; with more than one agent the compiler picks the `LEAD` coordination topology.
+- `ticket_body` is fluid by default. It's untrusted per-item data, so it goes only in a
+  fenced data block that the model is told to treat as data, never as instructions. This
+  is the prompt-injection boundary (see [concepts](concepts.md)).
+- `lead = "lead"` is a module-level string that names the coordinator role. With more than
+  one agent, the compiler picks the `LEAD` coordination topology.
 
 `pyproject.toml` supplies identity and version:
 
@@ -125,8 +125,8 @@ uv run craw dev demo/triage-bot -i project=acme -i ticket_body="login button bro
 ## 6. Run the team
 
 A `Run` is one durable execution of a Definition against one input set. It drives the
-team through the `AgentRuntime` seam, validates inputs before any model call, and emits
-telemetry into the `Store`:
+team through the `AgentRuntime` seam, validates inputs before any model call, and writes
+telemetry to the `Store`:
 
 ```python
 import asyncio
@@ -144,15 +144,15 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Under `LEAD` coordination, `run_team` dispatches each delegate, threads each typed result
-back to the lead as fluid data (`classifier_result`, `summarizer_result`), then runs the
-lead to combine them. To run against the real model, swap `MockRuntime()` for
-`CommandRuntime()` (drives `claude -p`, still no API key).
+Under `LEAD` coordination, `run_team` dispatches each delegate and threads each typed
+result back to the lead as fluid data (`classifier_result`, `summarizer_result`). It then
+runs the lead to combine them. To run against the real model, swap `MockRuntime()` for
+`CommandRuntime()`, which drives `claude -p` and still needs no API key.
 
 ## 7. Wire a Source → Batch → Sink pipeline
 
-The triage bot becomes a *bulk* tool when you fan it out over many tickets. A multi
-`Source` emits a list; a `Batch` fans out to one `Run` per item; a `Sink` writes results.
+The triage bot becomes a bulk tool when you fan it out over many tickets. A multi `Source`
+emits a list, a `Batch` runs one `Run` per item, and a `Sink` writes the results.
 
 ```python
 import asyncio
@@ -192,17 +192,17 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Wiring is **type-checked at assembly** (`check_wiring`): a mistyped or missing wire is
-rejected before any model call, not at run time. The sink is dry-run by default, so this
-is fully offline. For a top-level, durable, checkpointed pipeline, compose the same steps
-into a `Workflow` (see [concepts](concepts.md)).
+`check_wiring` type-checks the wiring at assembly time, so a mistyped or missing wire is
+rejected before any model call rather than at run time. The sink is dry-run by default, so
+this runs fully offline. To get a top-level, durable, checkpointed pipeline, compose the
+same steps into a `Workflow` (see [concepts](concepts.md)).
 
 ## 8. Measure quality with a Rubric
 
-The point of bulk runs is to *measure and improve*. A `Metric` scores one `Output`; a
-`Rubric` bundles metrics into a score vector; a `Benchmark` runs a rubric over a fixed
-task set and aggregates — all deterministic under `MockRuntime`, so iterating on metrics
-never costs anything.
+Bulk runs exist so you can measure and improve. A `Metric` scores one `Output`. A `Rubric`
+bundles metrics into a score vector. A `Benchmark` runs a rubric over a fixed task set and
+aggregates the scores. All of this is deterministic under `MockRuntime`, so iterating on
+metrics never costs anything.
 
 ```python
 import asyncio
@@ -229,8 +229,8 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-From here, compare two Definition versions over the same tasks with `compare` and flag a
-worse candidate with `is_regression` — the improvement loop. See the
+From here, use `compare` to score two Definition versions over the same tasks, and
+`is_regression` to flag a candidate that got worse. That's the improvement loop. See the
 [cookbook](cookbook.md) for eval-as-test and snapshot/replay recipes.
 
 ## Where to go next

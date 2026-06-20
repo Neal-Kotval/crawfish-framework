@@ -1,8 +1,8 @@
 # Cookbook
 
-Short, copy-paste recipes. Every symbol is in the public API (`crawfish.__all__`).
-Runs use `MockRuntime` so they're zero-key and deterministic; swap in `CommandRuntime`
-for real `claude -p` runs.
+Copy-paste recipes for common tasks. Every symbol used here is in the public API
+(`crawfish.__all__`). The runs use `MockRuntime`, so they need no key and stay
+deterministic. Swap in `CommandRuntime` to run them against real `claude -p`.
 
 ## Fan out over N items
 

@@ -1,23 +1,23 @@
 # Connector starter issues
 
-These are ready-to-file `connector`-labeled starter issues — the canonical first
-contribution to Crawfish. Each is self-contained: a one-paragraph scope, the base
-class to subclass, and a typed I/O sketch. Build one by copying the
-[Slack worked example](contributing-a-connector.md) and swapping the body.
+These are `connector`-labeled starter issues, ready to file. A connector is the first
+contribution most people make to Crawfish. Each issue below is self-contained: it gives
+you a one-paragraph scope, the base class to subclass, and a typed I/O sketch. To build
+one, copy the [Slack worked example](contributing-a-connector.md) and swap in your body.
 
-Every connector must uphold the [security spine](../architecture/SECURITY.md):
-**static-only targets** and **credentials by reference** (an env-var name, never the
-value). Sinks default to `dry_run=True` so tests stay offline.
+Every connector must uphold the [security spine](../architecture/SECURITY.md). Targets
+are static-only, and credentials are passed by reference: you give the name of an env
+var, never the value. Sinks default to `dry_run=True`, so tests run offline.
 
 ---
 
 ## Slack sink — the worked reference
 
-**Status: done.** Shipped as `packages/crawfish-slack/` and documented in full in
+**Status: done.** It ships as `packages/crawfish-slack/` and is documented in full in
 [Contributing a connector](contributing-a-connector.md). Use it as the template for
 every connector below.
 
-Scope: post a message to a static Slack channel. Holds the bot token by reference and
+Scope: post a message to a static Slack channel. It holds the bot token by reference and
 records writes in dry-run mode. Base class: `Sink[JSONValue]`. Target:
 `channel: str (static)`. Input value: message text. `credential_ref` → bot-token
 env var.
@@ -26,10 +26,10 @@ env var.
 
 ## Notion sink
 
-Scope: create a page or append a block in a fixed Notion database — a clean target
-for "summarize each item, file it in a tracker". The database is chosen once
-(static); page contents come from the pipeline output. Hold the integration token by
-reference; resolve it only at egress.
+Scope: create a page or append a block in a fixed Notion database. This is a clean
+target for "summarize each item, then file it in a tracker". You choose the database
+once, as a static input; the page contents come from the pipeline output. Hold the
+integration token by reference and resolve it only at egress.
 
 - **Base class:** `Sink[JSONValue]`
 - **Target (static):** `database_id: str`
@@ -38,9 +38,9 @@ reference; resolve it only at egress.
 
 ## Gmail source
 
-Scope: fetch the messages matching a static Gmail search query so a pipeline can
-triage or summarize an inbox. The query is fixed at batch start; results stream as
-fluid items. Emits multiple outputs (`multi=True`).
+Scope: fetch the messages matching a static Gmail search query, so a pipeline can
+triage or summarize an inbox. The query is fixed at batch start, and results stream
+back as fluid items. Emits multiple outputs (`multi=True`).
 
 - **Base class:** `Source[JSONValue]`, `multi=True`
 - **Input (static):** `query: str` (e.g. `"label:support is:unread"`)
@@ -49,9 +49,10 @@ fluid items. Emits multiple outputs (`multi=True`).
 
 ## Jira sink
 
-Scope: create or comment on an issue in a fixed Jira project — the Atlassian
-counterpart to the in-tree Linear sink. Project is static; issue fields come from the
-output. Idempotent by the base class, so a re-run won't duplicate the issue.
+Scope: create or comment on an issue in a fixed Jira project. This is the Atlassian
+counterpart to the in-tree Linear sink. The project is static, and the issue fields
+come from the output. The base class makes it idempotent, so a re-run won't duplicate
+the issue.
 
 - **Base class:** `Sink[JSONValue]`
 - **Target (static):** `project_key: str`
@@ -60,8 +61,8 @@ output. Idempotent by the base class, so a re-run won't duplicate the issue.
 
 ## Postgres source
 
-Scope: stream rows from a static, parameterised query so a pipeline can fan out over
-a table. The SQL text is static (never model-derived); only bound parameters may
+Scope: stream rows from a static, parameterised query, so a pipeline can fan out over
+a table. The SQL text is static and never model-derived; only the bound parameters may
 vary. Emits one output per row (`multi=True`).
 
 - **Base class:** `Source[JSONValue]`, `multi=True`
@@ -71,9 +72,9 @@ vary. Emits one output per row (`multi=True`).
 
 ## RSS source
 
-Scope: pull entries from a static feed URL — the simplest possible source (no
-credential needed), ideal for a first contribution. The feed URL is static; entries
-stream as fluid items.
+Scope: pull entries from a static feed URL. This is the simplest source there is. It
+needs no credential, which makes it a good first contribution. The feed URL is static,
+and entries stream as fluid items.
 
 - **Base class:** `Source[JSONValue]`, `multi=True`
 - **Input (static):** `feed_url: str`
@@ -82,9 +83,10 @@ stream as fluid items.
 
 ## Webhook sink
 
-Scope: POST the pipeline output to a static URL — a generic egress for any system
-that accepts JSON. The URL is static so a prompt can't redirect the call; the body is
-the output value. Optionally sign the payload with a referenced secret.
+Scope: POST the pipeline output to a static URL. This is a generic egress for any
+system that accepts JSON. Keeping the URL static means a prompt can't redirect the
+call; the body is the output value. You can optionally sign the payload with a
+referenced secret.
 
 - **Base class:** `Sink[JSONValue]`
 - **Target (static):** `url: str`

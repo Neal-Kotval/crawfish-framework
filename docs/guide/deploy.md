@@ -1,13 +1,13 @@
 # Deploy — always-on pipelines
 
-`craw deploy` takes a pipeline from **runs-once** to **always-on**. It detaches a
-supervisor process that survives the shell closing, fires the pipeline on a schedule (or
-continuously), auto-restarts failed cycles, and resumes orphaned runs via the execution
-ledger after a restart.
+`craw deploy` keeps a pipeline running instead of running it once. It starts a detached
+supervisor that survives the shell closing. The supervisor fires the pipeline on a
+schedule or continuously, restarts failed cycles, and picks up runs left in flight after
+a restart by reading the execution ledger.
 
-A deploy is a local, key-free thing: the supervisor drives the same `claude -p` path a
-foreground run does. There is no hosted dependency — switching from `craw dev` to
-`craw deploy` is an operating-mode change, not a code change.
+A deploy stays local and needs no key. The supervisor drives the same `claude -p` path a
+foreground run does, with no hosted dependency. Moving from `craw dev` to `craw deploy`
+changes how the pipeline runs, not the code.
 
 ## Command
 
@@ -16,14 +16,14 @@ craw deploy <pipeline> [--schedule "<cron>"] [--name <name>]
 ```
 
 - `--schedule "<cron>"` — fire on a 5-field cron expression (e.g. `"0 8 * * *"` =
-  08:00 daily). Omit it to run **continuously**: each cycle starts when the previous one
+  08:00 daily). Omit it to run continuously: each cycle starts when the previous one
   finishes.
 - `--name <name>` — registry name. Defaults to `crawfish/<pipeline>`.
 
-The supervisor registers a PID entry in a **Store-backed deploy registry**, so
-[`craw manage`](manage.md) and [`craw visualize`](visualize.md) can see it. Each fired
-run is checkpointed to the execution ledger, so a supervisor restart **resumes orphaned
-runs** rather than dropping or duplicating them.
+The supervisor records a PID entry in a Store-backed deploy registry, so
+[`craw manage`](manage.md) and [`craw visualize`](visualize.md) can see it. It
+checkpoints each fired run to the execution ledger. On restart, the supervisor resumes
+runs that were in flight instead of dropping or duplicating them.
 
 ## Worked example — deploy the triage bot
 
@@ -34,7 +34,7 @@ craw deploy demo/triage-bot --schedule "0 8 * * *"
 # deployed: crawfish/triage-bot (schedule: 0 8 * * *) — supervisor pid 48213
 ```
 
-The command returns immediately; the supervisor keeps running after you close the
+The command returns right away, and the supervisor keeps running after you close the
 terminal. Confirm it is registered:
 
 ```bash
@@ -43,8 +43,8 @@ craw manage
 # crawfish/triage-bot      running   00:00:12 —          08:00        $0.00
 ```
 
-To run continuously instead (each cycle begins when the last ends — useful for a queue
-drain), drop `--schedule`:
+To run continuously instead, drop `--schedule`. Each cycle begins when the last one
+ends, which is useful for draining a queue:
 
 ```bash
 craw deploy demo/triage-bot --name triage-drain
@@ -60,23 +60,23 @@ craw manage stop crawfish/triage-bot
 ## Resume semantics
 
 Each cycle's run is written to the execution ledger before it starts. If the supervisor
-dies mid-cycle (crash, reboot) and is restarted, it reads the ledger, finds runs that
-were in flight, and **resumes them** — the same checkpoint/resume machinery that lets a
-foreground workflow survive a crash. A failed cycle is auto-restarted; the schedule is
-never silently skipped.
+dies mid-cycle from a crash or reboot and is then restarted, it reads the ledger, finds
+the runs that were in flight, and resumes them. This is the same checkpoint-and-resume
+machinery that lets a foreground workflow survive a crash. A failed cycle restarts
+automatically, and the schedule is never silently skipped.
 
 ## Security
 
-The deploy supervisor upholds the framework's **secrets-by-reference** spine:
+The deploy supervisor follows the framework's secrets-by-reference rule:
 
-- **No secret values in argv.** The session name is `crawfish/<pipeline>`; no credential
+- **No secret values in argv.** The session name is `crawfish/<pipeline>`. No credential
   appears on the command line, where `ps` could read it.
-- **No secret values in the environment, registry, or logs.** Secrets are resolved by
-  *reference* (an env-var name) at the egress boundary, exactly as in a foreground run —
-  never copied into the detached process's environment, the deploy registry row, or the
-  supervisor log.
+- **No secret values in the environment, registry, or logs.** The supervisor resolves
+  secrets by reference (an env-var name) at the egress boundary, the same way a
+  foreground run does. It never copies them into the detached process's environment, the
+  deploy registry row, or the supervisor log.
 - **Tenancy.** Every registry and ledger row carries `org_id` (defaulted `"local"`).
 
 See the [operations overview](operations.md) for how deploy fits together with observers,
-the dashboard, and `craw manage`, and [SECURITY.md](../architecture/SECURITY.md) for the
+the dashboard, and `craw manage`. [SECURITY.md](../architecture/SECURITY.md) covers the
 full spine.
