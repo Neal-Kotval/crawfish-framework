@@ -320,6 +320,51 @@
 }
 
 /* ============================================================================
+   MOBILE NAV DRAWER  (the slide-out menu — primary color must not leak in)
+   Material paints the drawer banner + source strip with the primary color
+   (red) on small screens; repaint them in the brand palette.
+   ========================================================================== */
+[data-md-color-scheme="default"] {
+  --craw-panel: #ece4d7; /* solid paper for opaque mobile surfaces */
+}
+[data-md-color-scheme="slate"] {
+  --craw-panel: #181d23;
+}
+
+@media screen and (max-width: 76.1875em) {
+  /* Drawer banner — paper/ink, not red.
+     Match Material's specificity: it targets the `[for="__drawer"]` label. */
+  .md-nav--primary .md-nav__title[for="__drawer"] {
+    background-color: var(--craw-panel);
+    color: var(--md-default-fg-color);
+    box-shadow: 0 1px 0 var(--craw-glass-line);
+    line-height: normal;
+    text-transform: none;
+    letter-spacing: -0.01em;
+    font-family: var(--craw-display);
+    font-size: 1rem;
+    font-weight: 600;
+    opacity: 1;
+  }
+  /* Oversized, clipped wordmark in the banner — drop it, keep banner clean */
+  .md-nav--primary .md-nav__title[for="__drawer"] .md-nav__button.md-logo {
+    display: none;
+  }
+  .md-nav--primary .md-nav__title[for="__drawer"]::before {
+    color: var(--md-default-fg-color);
+  }
+
+  /* Repo source strip — ink/paper instead of the red primary--dark */
+  .md-nav__source {
+    background-color: var(--craw-panel);
+    color: var(--md-default-fg-color);
+    border-top: 1px solid var(--craw-glass-line);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+/* ============================================================================
    LOGO  (wordmark; swap to light-text variant in dark mode)
    ========================================================================== */
 .md-header__topic:first-child {
