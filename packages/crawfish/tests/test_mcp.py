@@ -51,11 +51,18 @@ def test_allowlist_respected(tmp_path: Path) -> None:
     }
 
 
-def test_build_mcp_config_injects_secret_by_reference() -> None:
+def test_build_mcp_config_references_secret_never_embeds_value() -> None:
+    # CRA-178: the secret VALUE must never land in the agent-readable config; only the
+    # reference name + a brokered marker do.
+    import json
+
     conn = MCPConnection(name="linear", command=["x"], auth="LINEAR_API_KEY", tools=["t"])
     config = build_mcp_config([conn], env={"LINEAR_API_KEY": "secret-value"})
     server = config["mcpServers"]["linear"]  # type: ignore[index]
-    assert server["env"] == {"LINEAR_API_KEY": "secret-value"}
+    assert "env" not in server  # no value-bearing env
+    assert server["auth_ref"] == "LINEAR_API_KEY"  # reference only
+    assert server["brokered"] is True
+    assert "secret-value" not in json.dumps(config)  # the value appears nowhere
 
 
 def test_secret_never_in_prompt(tmp_path: Path) -> None:

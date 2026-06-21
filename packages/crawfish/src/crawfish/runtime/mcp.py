@@ -27,16 +27,18 @@ def build_mcp_config(
 ) -> dict[str, object]:
     """Build a ``{"mcpServers": {...}}`` config (the shape `claude --mcp-config` reads).
 
-    Secret values land in each server's ``env`` (by reference), never in any prompt.
+    Credentials are referenced **by name only** — the secret VALUE is **never** written
+    into this config, which is passed to ``claude`` as an arg the agent can read.
 
-    .. deprecated:: CRA-178
-        This path injects the secret VALUE into a subprocess ``env`` the agent can
-        read — a prompt-injected agent can exfiltrate it. For any consequential
-        credential, build the config through
-        :func:`crawfish.secrets.brokered_mcp_config`, which leases the secret through
-        the :class:`~crawfish.secrets.SecretBroker` (Grant-gated, STATIC-only, audited)
-        and keeps the value out of the agent-readable env entirely.
+    CRA-178 (closes the MCP secret-leak): an auth-bearing connection contributes only
+    ``auth_ref`` + ``brokered: true`` (the env-var *name*, never its value). The value is
+    delivered out-of-band by the :class:`~crawfish.secrets.SecretBroker`
+    (:func:`crawfish.secrets.brokered_mcp_config`, Grant-gated + STATIC-only + audited) —
+    a prompt-injected agent cannot exfiltrate a value that was never placed in its
+    process tree. The ``env`` argument is accepted for back-compat but intentionally
+    unused: this path no longer resolves secrets to values.
     """
+    _ = env  # back-compat only; secret values are never resolved into the config (CRA-178)
     servers: dict[str, object] = {}
     for conn in connections:
         server: dict[str, object] = {}
@@ -45,10 +47,10 @@ def build_mcp_config(
             server["args"] = conn.command[1:]
         if conn.url:
             server["url"] = conn.url
-        secret = resolve_secret(conn.auth, env)
-        if secret is not None:
-            # injected into the server's environment, keyed by the reference name
-            server["env"] = {conn.auth: secret}
+        if conn.auth:
+            # reference only — the broker injects the value at egress, never here.
+            server["auth_ref"] = conn.auth
+            server["brokered"] = True
         servers[conn.name] = server
     return {"mcpServers": servers}
 
