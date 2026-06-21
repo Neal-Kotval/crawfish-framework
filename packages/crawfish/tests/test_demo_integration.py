@@ -147,13 +147,24 @@ def test_demo_run_produces_typed_emission_stream(triage: Definition) -> None:
     telemetry the runtime now emits — and that the fluid ticket body propagates taint
     onto the RUN_FINISH emission across the emission boundary.
     """
+    import json
+
     from crawfish.emission import EmissionKind, read_emissions
     from crawfish.run import Run
 
     store = SqliteStore()
     ctx = RunContext(store=store)  # type: ignore[arg-type]
+    # The triage-bot now declares a typed `Triage` RECORD output (CRA-172): the mock
+    # returns a structured payload that validates against the schema.
+    triage_json = json.dumps(
+        {"category": "bug", "severity": "high", "summary": "login button does nothing"}
+    )
     run = Run(triage, {"project": "acme", "ticket_body": "login button does nothing"})
-    asyncio.run(run.execute(ctx, MockRuntime()))
+    out = asyncio.run(run.execute(ctx, MockRuntime(responder=lambda _r: triage_json)))
+
+    # Typed output end-to-end: Output.value is a validated dict, not a string.
+    assert isinstance(out.value, dict)
+    assert out.value["category"] == "bug" and out.value["severity"] == "high"
 
     emissions = read_emissions(store, ctx.run_id)
     assert emissions, "expected a typed emission stream"

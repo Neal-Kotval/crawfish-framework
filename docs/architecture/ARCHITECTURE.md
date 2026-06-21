@@ -69,6 +69,41 @@ the whole reason cloud + scale are driver swaps, not rewrites.
   Output). Emissions never carry secret values — `secret_lease` carries the `ref`
   only, and the ledger is written through `ScrubbingStore`.
 
+## Typed outputs & validation (Phase 2)
+
+- **`crawfish.validation`** turns a Definition's declared `outputs` / `inputs`
+  (`list[Parameter]`) into a real type contract. `validate_output(text, outputs, reg)`
+  parses the model's text and validates it against the schema; `validate_inputs(values,
+  schema, reg)` checks bound input *values* (not just presence, which `run.validate()`
+  did); `structural_diff(before, after)` is the order-canonical diff eval scoring and the
+  tuner key off of. Validation is **registry-driven** — it walks the resolved `TypeDef`
+  (PRIMITIVE / RECORD / LIST / OPTIONAL) from `crawfish.typesystem`, so there is **no new
+  runtime dependency** (no `jsonschema`).
+- **Extraction (parse-from-text).** `claude -p` (CommandRuntime) has no JSON mode and
+  returns free text, so `validate_output` extracts JSON *out of* the text: it strips
+  Markdown code fences and isolates the outermost `{...}` / `[...]` span before decoding.
+  A single `str`-typed output (or a Definition with **no** declared outputs) is a
+  pass-through — the raw text becomes `Output.value`, so back-compat with the
+  string-output era holds. Otherwise the parsed value is **canonicalised** (record keys
+  sorted) so golden-set equality and diffs are deterministic under record/replay.
+- **`Output.value` is the typed value, not a string.** On completion `run.py` builds
+  `Output(value=<typed>, output_schema=definition.outputs, ...)` — a RECORD output yields
+  a validated `dict`, a LIST a `list`, etc. (ADR 0013: the value is inline). `Metric`s
+  and the inspector read it directly.
+- **Failure reasons vs the action policy are distinct.** `ValidationFailure` is the
+  **closed set of reasons** (`NOT_JSON`, `MISSING_FIELD`, `TYPE_MISMATCH`, `EXTRA_FIELD`,
+  `EMPTY_SCHEMA`, `CONSTRAINT`) carried on each `ValidationError`. `ValidationAction`
+  (`RETRY` / `REPAIR` / `DEAD_LETTER`) is the separate *policy* a `Run` applies when an
+  output fails: `RETRY` re-runs via the existing `RetryPolicy`; `REPAIR` re-prompts the
+  model **once** with the schema error fed back as fluid data (a metered extra call that
+  respects `ctx.cost_budget` / `ctx.cancel_token`); `DEAD_LETTER` (default) gives up.
+  The value is never silently coerced.
+- **Security / taint.** The typed value is untrusted model output → `tainted=True` when
+  any input was fluid **or** the run consumed any `tool_result` event (a malicious tool
+  output is an injection vector). A wrong-typed input is rejected *before* any model call.
+  Callers that deliberately over-bind (the `Router`'s classifier) opt out via
+  `validate_input_types=False` / `validate_output_schema=False`.
+
 ## Packaging
 
 - `packages/crawfish` — the OSS framework (the `pip install crawfish` distribution).

@@ -19,11 +19,19 @@ from crawfish.core.types import JSONValue
 from crawfish.definition.types import Definition
 from crawfish.emission import Emission, EmissionKind, emit
 from crawfish.output import Output
-from crawfish.runtime.base import AgentRuntime
+from crawfish.retry import RetryPolicy, run_with_retry
+from crawfish.runtime.base import AgentRuntime, EventKind, RunResult
 from crawfish.runtime.team import run_team
 from crawfish.store.base import Store
+from crawfish.typesystem.registry import TypeRegistry, default_registry
+from crawfish.validation import (
+    ValidationAction,
+    ValidationError,
+    validate_inputs,
+    validate_output,
+)
 
-__all__ = ["RunStatus", "Run", "InputBindingError", "RunSuspended"]
+__all__ = ["RunStatus", "Run", "InputBindingError", "InputValidationError", "RunSuspended"]
 
 
 class RunStatus(str, Enum):
@@ -36,6 +44,28 @@ class RunStatus(str, Enum):
 
 class InputBindingError(ValueError):
     """Raised when a required input slot is unbound before execution."""
+
+
+class InputValidationError(ValueError):
+    """Raised when a bound input value fails type validation (before any model call).
+
+    Carries the structured :class:`~crawfish.validation.ValidationError` list so callers
+    can route the failure through the configured :class:`ValidationAction`.
+    """
+
+    def __init__(self, errors: list[ValidationError]) -> None:
+        self.errors = errors
+        detail = "; ".join(f"{e.field}: {e.detail}" for e in errors)
+        super().__init__(f"input validation failed: {detail}")
+
+
+class OutputValidationError(RuntimeError):
+    """Raised internally when a model output fails schema validation (drives REPAIR/DEAD_LETTER)."""
+
+    def __init__(self, errors: list[ValidationError]) -> None:
+        self.errors = errors
+        detail = "; ".join(f"{e.field}: {e.detail}" for e in errors)
+        super().__init__(f"output validation failed: {detail}")
 
 
 class RunSuspended(RuntimeError):
@@ -52,6 +82,11 @@ class Run:
         *,
         runtime: AgentRuntime | None = None,
         requires_approval: bool = False,
+        on_invalid: ValidationAction = ValidationAction.DEAD_LETTER,
+        retry_policy: RetryPolicy | None = None,
+        registry: TypeRegistry | None = None,
+        validate_input_types: bool = True,
+        validate_output_schema: bool = True,
         id: str | None = None,
     ) -> None:
         self.id = id or new_id()
@@ -59,12 +94,29 @@ class Run:
         self.inputs: dict[str, JSONValue] = dict(inputs or {})
         self.runtime = runtime
         self.requires_approval = requires_approval
+        # Validation action policy (CRA-172): how to handle an output that fails the
+        # declared output schema. RETRY re-runs via RetryPolicy, REPAIR re-prompts the
+        # model with the error (one extra metered call), DEAD_LETTER gives up.
+        self.on_invalid = on_invalid
+        self.retry_policy = retry_policy or RetryPolicy()
+        self.registry: TypeRegistry = registry or default_registry
+        # Some callers deliberately over-bind (e.g. the Router binds one item value to
+        # every slot to satisfy presence) — they opt out of input *type* checking while
+        # keeping the presence guard. Likewise a classifier ignores its declared output
+        # schema (it reads free text), so it opts out of output validation.
+        self.validate_input_types = validate_input_types
+        self.validate_output_schema = validate_output_schema
         self.status = RunStatus.PENDING
         self.output: Output[JSONValue] | None = None
 
     # -- validation ---------------------------------------------------------
     def validate(self) -> None:
-        """Fail fast if any required input slot is unbound (before any model call)."""
+        """Fail fast before any model call: required slots bound *and* typed.
+
+        Presence is checked first (``InputBindingError`` for an unbound required slot),
+        then each bound value's type is validated against its ``Parameter.type`` via the
+        registry (``InputValidationError`` for a wrong-typed input).
+        """
         provided = set(self.inputs)
         missing = [
             p.name
@@ -73,6 +125,11 @@ class Run:
         ]
         if missing:
             raise InputBindingError(f"missing required input(s): {missing}")
+
+        if self.validate_input_types:
+            errors = validate_inputs(self.inputs, self.definition.inputs, self.registry)
+            if errors:
+                raise InputValidationError(errors)
 
     # -- persistence / telemetry -------------------------------------------
     def _persist(self, ctx: RunContext) -> None:
@@ -155,7 +212,7 @@ class Run:
         self._emit_start(ctx, rt.name, definition=self.definition.id)
 
         try:
-            result = await run_team(self.definition, self.inputs, ctx, rt)
+            value, result = await self._produce_validated(ctx, rt)
         except BudgetExceeded as exc:
             self.status = RunStatus.FAILED
             self._persist(ctx)
@@ -163,6 +220,18 @@ class Run:
                 ctx,
                 "failed",
                 reason="budget_exceeded",
+                detail=str(exc),
+                latency_ms=(time.perf_counter() - start) * 1000,
+            )
+            raise
+        except OutputValidationError as exc:
+            # Validation exhausted its action policy (RETRY/REPAIR failed, or DEAD_LETTER).
+            self.status = RunStatus.FAILED
+            self._persist(ctx)
+            self._emit_finish(
+                ctx,
+                "failed",
+                reason="output_validation",
                 detail=str(exc),
                 latency_ms=(time.perf_counter() - start) * 1000,
             )
@@ -178,17 +247,18 @@ class Run:
             )
             raise
 
-        # Output schema derives from the Definition's declared outputs. The result
-        # is tainted if any input was fluid (untrusted) — taint originates here and
-        # propagates downstream.
+        # Output schema derives from the Definition's declared outputs. The typed value
+        # is fluid (untrusted model output): tainted if any input was fluid OR the run
+        # consumed any tool/MCP result (a malicious tool output is an injection vector).
         from crawfish.runtime.prompt import split_inputs
 
         _static, fluid = split_inputs(self.definition, self.inputs)
+        tool_tainted = any(e.kind is EventKind.TOOL_RESULT for e in result.events)
         out: Output[JSONValue] = Output(
             output_schema=list(self.definition.outputs),
-            value=result.text,
+            value=value,
             produced_by=self.id,
-            tainted=bool(fluid),
+            tainted=bool(fluid) or tool_tainted,
         )
         out.persist(ctx.store, org_id=ctx.org_id)
         self.output = out
@@ -203,6 +273,68 @@ class Run:
             latency_ms=(time.perf_counter() - start) * 1000,
         )
         return out
+
+    # -- typed output production + validation policy ------------------------
+    async def _produce_validated(
+        self, ctx: RunContext, rt: AgentRuntime
+    ) -> tuple[JSONValue, RunResult]:
+        """Run the team and validate its output against the declared schema.
+
+        Returns ``(typed_value, result)``. On a schema failure the configured
+        :class:`ValidationAction` decides: RETRY re-runs the team (via ``RetryPolicy``),
+        REPAIR re-prompts the model **once** with the error (a metered extra call that
+        respects ``ctx.cost_budget``/``ctx.cancel_token``), DEAD_LETTER raises
+        :class:`OutputValidationError`. The typed value is never silently coerced.
+        """
+        if self.on_invalid is ValidationAction.RETRY:
+            return await run_with_retry(lambda: self._run_and_validate(ctx, rt), self.retry_policy)
+        try:
+            return await self._run_and_validate(ctx, rt)
+        except OutputValidationError as exc:
+            if self.on_invalid is ValidationAction.REPAIR:
+                return await self._repair(ctx, rt, exc.errors)
+            raise  # DEAD_LETTER
+
+    async def _run_and_validate(
+        self, ctx: RunContext, rt: AgentRuntime
+    ) -> tuple[JSONValue, RunResult]:
+        result = await run_team(self.definition, self.inputs, ctx, rt)
+        if not self.validate_output_schema:
+            return result.text, result
+        value, errors = validate_output(result.text, self.definition.outputs, self.registry)
+        if errors:
+            raise OutputValidationError(errors)
+        return value, result
+
+    async def _repair(
+        self, ctx: RunContext, rt: AgentRuntime, errors: list[ValidationError]
+    ) -> tuple[JSONValue, RunResult]:
+        """One repair re-prompt: re-run with the schema error fed back as fluid data.
+
+        Cooperatively honours cancellation and refuses to spend past the ceiling: if the
+        cost budget is already exhausted the repair is skipped (the original errors
+        dead-letter) rather than spawning another metered model call. Otherwise the extra
+        turn is charged through the runtime exactly like the first, so ``ctx.cost_budget``
+        caps total spend and the overshoot is bounded by one call.
+        """
+        ctx.cancel_token.raise_if_cancelled()
+        # Pre-flight: don't start a metered repair call with no headroom left. ``None``
+        # means an unbounded (local-dev) budget; a real ceiling at/below zero dead-letters.
+        remaining = ctx.cost_budget.remaining_usd
+        if remaining is not None and remaining <= 0.0:
+            raise OutputValidationError(errors)
+        detail = "; ".join(f"{e.field or '<root>'}: {e.detail}" for e in errors)
+        repair_inputs = dict(self.inputs)
+        # Fed as an ordinary (fluid) input — never concatenated into instructions.
+        repair_inputs["_validation_error"] = (
+            f"Your previous output failed schema validation: {detail}. "
+            "Return only a corrected value that matches the declared output schema."
+        )
+        result = await run_team(self.definition, repair_inputs, ctx, rt)
+        value, errors2 = validate_output(result.text, self.definition.outputs, self.registry)
+        if errors2:
+            raise OutputValidationError(errors2)
+        return value, result
 
     # -- durability / recovery ---------------------------------------------
     @classmethod

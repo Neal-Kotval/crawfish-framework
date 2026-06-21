@@ -140,7 +140,15 @@ class Classifier:
         """
         if self._definition is None:
             return self.classify(output)
-        run = Run(self._definition, self._bind_inputs(output))
+        # The classifier deliberately over-binds (one item value into every slot to
+        # satisfy presence) and reads the run's free text — so it skips input-type and
+        # output-schema validation (CRA-172).
+        run = Run(
+            self._definition,
+            self._bind_inputs(output),
+            validate_input_types=False,
+            validate_output_schema=False,
+        )
         result = await run.execute(ctx, runtime)
         return _normalise(str(result.value), self.labels, self.default)
 

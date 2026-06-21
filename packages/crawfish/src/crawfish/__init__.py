@@ -211,6 +211,7 @@ from crawfish.triggers import (
 from crawfish.typesystem import TypeDef, TypeKind, TypeRegistry, default_registry
 from crawfish.validation import (
     StructuralDiff,
+    ValidationAction,
     ValidationError,
     ValidationFailure,
     structural_diff,
@@ -443,6 +444,7 @@ __all__ = [
     "emit",
     "read_emissions",
     "ValidationFailure",
+    "ValidationAction",
     "ValidationError",
     "StructuralDiff",
     "validate_output",

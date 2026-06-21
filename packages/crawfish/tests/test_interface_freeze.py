@@ -142,13 +142,12 @@ def test_structural_diff_equal_predicate() -> None:
     assert StructuralDiff(changed=("a",)).equal is False
 
 
-def test_output_validation_functions_are_stubs() -> None:
-    with pytest.raises(NotImplementedError):
-        validate_output("{}", [])
-    with pytest.raises(NotImplementedError):
-        validate_inputs({}, [])
-    with pytest.raises(NotImplementedError):
-        structural_diff(1, 2)
+def test_output_validation_functions_implemented() -> None:
+    """CRA-172 implements the frozen signatures (no longer NotImplementedError stubs)."""
+    value, errors = validate_output("hello", [])  # no schema → pass-through string
+    assert value == "hello" and errors == []
+    assert validate_inputs({}, []) == []
+    assert structural_diff(1, 2).changed == ("",)
 
 
 # --- Provider / model resolution ---------------------------------------------
