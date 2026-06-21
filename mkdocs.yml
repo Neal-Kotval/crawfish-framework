@@ -2,6 +2,10 @@ site_name: Crawfish
 site_description: Agents for bulk work over your data — Source → Batch → Aggregator → Router → Sink.
 site_url: https://neal-kotval.github.io/crawfish/
 docs_dir: docs
+
+# Internal doc-authoring findings log — kept in-repo for the team, not published.
+exclude_docs: |
+  BUILD-LOG.md
 repo_url: https://github.com/Neal-Kotval/crawfish
 
 theme:
@@ -39,6 +43,9 @@ markdown_extensions:
   - admonition
   - pymdownx.highlight
   - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
   - toc:
       permalink: true
 
@@ -60,6 +67,48 @@ nav:
       - Visualize: guide/visualize.md
       - Project structure: guide/project-structure.md
       - Export to Claude Code: guide/claude-code-export.md
+  - Reference:
+      - Overview: reference/index.md
+      - Substrate:
+          - Core types: reference/core-types.md
+          - Type system: reference/type-system.md
+          - Versioning & stability: reference/versioning-and-stability.md
+          - Context & budgets: reference/context-and-budgets.md
+      - Wiring & data:
+          - Output & wiring: reference/output-and-wiring.md
+          - Validation: reference/validation.md
+          - Context carry: reference/context-carry.md
+      - Authoring agents:
+          - Definition: reference/definition.md
+          - Runtimes: reference/runtimes.md
+          - Providers: reference/providers.md
+      - Pipeline nodes:
+          - Source & filter: reference/nodes-source-filter.md
+          - Aggregator: reference/nodes-aggregator.md
+          - Router & sink: reference/nodes-router-sink.md
+      - Running work:
+          - Run & engine: reference/run-and-engine.md
+          - Batch & execution: reference/batch-and-execution.md
+          - Persistence: reference/persistence.md
+      - Observe & control:
+          - Emission, inspector & visualize: reference/emission-inspector-visualize.md
+          - Anomaly: reference/anomaly.md
+          - Observer: reference/observer.md
+          - Cost, routing & cache: reference/cost-routing-cache.md
+      - Measure & improve:
+          - Metrics: reference/metrics.md
+          - Evals: reference/evals.md
+          - Tuner & learning: reference/tuner-and-learning.md
+      - Operate:
+          - Deploy, manage & triggers: reference/operate.md
+          - Authoring & config: reference/authoring.md
+      - Security spine:
+          - Secrets & consent: reference/secrets-and-consent.md
+          - Secret broker: reference/secret-broker.md
+          - Sandbox & jail: reference/sandbox-and-jail.md
+      - Tooling:
+          - Testing: reference/testing.md
+          - Claude Code export: reference/claude-code-export.md
   - Architecture:
       - Overview: architecture/ARCHITECTURE.md
       - Security spine: architecture/SECURITY.md

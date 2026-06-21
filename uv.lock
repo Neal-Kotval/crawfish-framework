@@ -205,7 +205,7 @@ wheels = [
 
 [[package]]
 name = "crawfish"
-version = "0.1.1"
+version = "0.2.0"
 source = { editable = "packages/crawfish" }
 dependencies = [
     { name = "pydantic" },
