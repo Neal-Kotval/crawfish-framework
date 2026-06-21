@@ -73,6 +73,12 @@ from crawfish.deploy import (
 )
 from crawfish.discovery import Registry, UnitRef
 from crawfish.doctor import DoctorFinding, DoctorReport, diagnose
+from crawfish.emission import (
+    EMISSION_SCHEMA_VERSION,
+    REQUIRED_ATTRS,
+    Emission,
+    EmissionKind,
+)
 from crawfish.engine import Engine, run_pipeline
 from crawfish.eval import (
     EvalCase,
@@ -149,6 +155,7 @@ from crawfish.observer import (
     StuckRun,
 )
 from crawfish.output import Output, WireError, check_wire, output_satisfies_inputs
+from crawfish.provider import ModelsConfig, Provider, ProviderPolicy, resolve_model
 from crawfish.retry import ItemResult, ItemStatus, RetryPolicy
 from crawfish.run import InputBindingError, Run, RunStatus, RunSuspended
 from crawfish.runtime import (
@@ -167,6 +174,7 @@ from crawfish.sandbox import EgressBroker, EgressDenied, run_out_of_process
 from crawfish.scaffold import scaffold_project
 from crawfish.secrets import (
     Capabilities,
+    Grant,
     ScrubbingStore,
     SecretManager,
     load_env,
@@ -199,6 +207,14 @@ from crawfish.triggers import (
     verify_webhook,
 )
 from crawfish.typesystem import TypeDef, TypeKind, TypeRegistry, default_registry
+from crawfish.validation import (
+    StructuralDiff,
+    ValidationError,
+    ValidationFailure,
+    structural_diff,
+    validate_inputs,
+    validate_output,
+)
 from crawfish.versioning import Freezable, FrozenError, Version
 from crawfish.visualize import dashboard_state, serve_dashboard
 from crawfish.workflow import Workflow
@@ -417,4 +433,20 @@ __all__ = [
     "EgressBroker",
     "EgressDenied",
     "run_out_of_process",
+    # Phase 2 contracts (CRA-184 interface freeze)
+    "Emission",
+    "EmissionKind",
+    "REQUIRED_ATTRS",
+    "EMISSION_SCHEMA_VERSION",
+    "ValidationFailure",
+    "ValidationError",
+    "StructuralDiff",
+    "validate_output",
+    "validate_inputs",
+    "structural_diff",
+    "Provider",
+    "ProviderPolicy",
+    "ModelsConfig",
+    "resolve_model",
+    "Grant",
 ]

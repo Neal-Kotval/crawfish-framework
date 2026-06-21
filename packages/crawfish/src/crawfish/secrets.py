@@ -16,8 +16,10 @@ from __future__ import annotations
 import re
 import tomllib
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from crawfish.core.ids import new_id
 from crawfish.core.types import JSONValue
 from crawfish.store.base import Store
 
@@ -30,6 +32,7 @@ __all__ = [
     "ScrubbingStore",
     "read_capabilities",
     "Capabilities",
+    "Grant",
 ]
 
 # Heuristic patterns for common credentials/PII, scrubbed even if not in the env map.
@@ -181,6 +184,31 @@ class Capabilities:
         if self.egress:
             parts.append(f"network egress: {', '.join(self.egress)}")
         return "; ".join(parts) if parts else "no special capabilities"
+
+
+@dataclass(frozen=True)
+class Grant:
+    """A recorded, consented capability grant for an installed package.
+
+    The persisted record that an install-time consent (CRA-180) produces: which
+    secrets and egress destinations the user approved for ``package``. The broker
+    (CRA-178) and the jail (CRA-179) consume this shape to enforce least privilege;
+    CRA-180 owns the grant *manifest* (creation/storage). Frozen + content-stable.
+    """
+
+    package: str
+    secrets: tuple[str, ...] = ()
+    egress: tuple[str, ...] = ()
+    granted_at: float = 0.0  # epoch seconds; set at consent time
+    grant_id: str = field(default_factory=new_id)
+
+    def permits_secret(self, ref: str) -> bool:
+        """True if this grant covers secret reference ``ref``."""
+        return ref in self.secrets
+
+    def permits_egress(self, destination: str) -> bool:
+        """True if this grant covers network egress to ``destination``."""
+        return destination in self.egress
 
 
 def read_capabilities(project_dir: str | Path) -> Capabilities:

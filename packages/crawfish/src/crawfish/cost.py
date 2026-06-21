@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from crawfish.core.context import BudgetExceeded, CostBudget
+from crawfish.provider import resolve_model
 from crawfish.runtime.command import DEFAULT_MODEL
 
 if TYPE_CHECKING:
@@ -77,16 +78,13 @@ class CostEstimate(BaseModel):
 
 
 def _resolve_model(model: str | list[str] | None) -> str:
-    """Resolve an agent's ``model`` field to a single id (mirrors the runtime).
+    """Resolve an agent's ``model`` field to a single id (delegates to the shared
+    resolver so the estimate can never drift from what the runtime actually runs).
 
     Unpinned (``None``) agents fall back to :data:`DEFAULT_MODEL`; a list pins to
-    its first entry, matching ``CommandRuntime._resolve_model``.
+    its first entry. See :func:`crawfish.provider.resolve_model`.
     """
-    if isinstance(model, str):
-        return model
-    if isinstance(model, list) and model:
-        return model[0]
-    return DEFAULT_MODEL
+    return resolve_model(model, default=DEFAULT_MODEL)
 
 
 def estimate_cost(

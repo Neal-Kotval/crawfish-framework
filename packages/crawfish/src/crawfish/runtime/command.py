@@ -13,6 +13,7 @@ import json
 from collections.abc import Awaitable, Callable
 
 from crawfish.core.context import RunContext
+from crawfish.provider import resolve_model
 from crawfish.runtime.base import (
     AgentRuntime,
     EventKind,
@@ -71,11 +72,9 @@ class CommandRuntime(AgentRuntime):
         if request.model:
             return request.model
         agent = pick_agent(request.definition, request.role)
-        if isinstance(agent.model, str):
-            return agent.model
-        if isinstance(agent.model, list) and agent.model:
-            return agent.model[0]
-        return self._default_model  # unpinned -> Claude-first default
+        # Delegate field->id resolution to the single shared resolver (ADR 0013);
+        # unpinned agents fall back to this runtime's Claude-first default (ADR 0005).
+        return resolve_model(agent.model, default=self._default_model)
 
     def _build_args(self, request: RunRequest, model: str) -> list[str]:
         args = ["--output-format", "stream-json", "--verbose", "--model", model]
