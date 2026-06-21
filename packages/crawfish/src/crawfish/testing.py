@@ -461,3 +461,24 @@ def assert_taint_conformance(cases: Sequence[TaintCase] | None = None) -> None:
                 raise AssertionError(
                     f"taint case {case.name!r}: tool-derived emission MUST be tainted"
                 )
+
+        # CRA-174: the transferable Context artifact is a Phase-2 boundary. The derived
+        # Output carried into the next agent must keep its taint, and a carry-strategy
+        # summary of a tainted entry must stay tainted (compaction never launders it).
+        from crawfish.runtime.context_artifact import Context
+        from crawfish.runtime.context_strategy import CarrySummary
+
+        ctx_art = Context().add_result(key="prior_result", role="node", result=derived)
+        if ctx_art.tainted is not case.expected:
+            raise AssertionError(
+                f"taint case {case.name!r}: Context entry tainted={ctx_art.tainted}, "
+                f"expected {case.expected}"
+            )
+        ctx_art = ctx_art.add_result(key="second", role="node", result=derived)
+        summarized = CarrySummary().carry(ctx_art)
+        if summarized.tainted is not case.expected:
+            raise AssertionError(
+                f"taint case {case.name!r}: summarized Context tainted="
+                f"{summarized.tainted}, expected {case.expected} (taint must survive "
+                f"compaction)"
+            )

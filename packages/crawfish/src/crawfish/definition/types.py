@@ -56,6 +56,9 @@ class TeamSpec(BaseModel):
     coordination: Coordination = Coordination.SINGLE
     lead: str | None = None  # coordinator role (for `lead` topology)
     workspace: Literal["shared", "isolated"] = "shared"
+    # Which subset of the typed Context artifact to carry between agents
+    # (full / recency / summary / typed_fields). None -> lossless default.
+    context_carry: str | None = None
 
 
 class Prompt(BaseModel):

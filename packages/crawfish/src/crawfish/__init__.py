@@ -193,9 +193,16 @@ from crawfish.retry import ItemResult, ItemStatus, RetryPolicy
 from crawfish.run import InputBindingError, Run, RunStatus, RunSuspended
 from crawfish.runtime import (
     AgentRuntime,
+    CarryFull,
+    CarryRecency,
+    CarrySummary,
+    CarryTypedFields,
     ClientProvider,
     ClientRuntime,
     CommandRuntime,
+    Context,
+    ContextCarryStrategy,
+    ContextEntry,
     ManagedRuntime,
     MockProvider,
     MockRuntime,
@@ -207,6 +214,7 @@ from crawfish.runtime import (
     RuntimeEvent,
     expand_candidates,
     get_runtime,
+    resolve_carry_strategy,
 )
 from crawfish.sandbox import EgressBroker, EgressDenied, run_out_of_process
 from crawfish.scaffold import scaffold_project
@@ -362,6 +370,15 @@ __all__ = [
     "RunResult",
     "RuntimeEvent",
     "get_runtime",
+    # transferable typed Context artifact + carry strategies
+    "Context",
+    "ContextEntry",
+    "ContextCarryStrategy",
+    "CarryFull",
+    "CarryRecency",
+    "CarrySummary",
+    "CarryTypedFields",
+    "resolve_carry_strategy",
     # nodes (M2)
     "Source",
     "RepoSource",

@@ -11,8 +11,18 @@ from crawfish.runtime.base import (
     ToolCall,
 )
 from crawfish.runtime.command import CommandRuntime, Transport
+from crawfish.runtime.context_artifact import (
+    ARTIFACT_THRESHOLD_BYTES,
+    Context,
+    ContextEntry,
+)
 from crawfish.runtime.context_strategy import (
+    CarryFull,
+    CarryRecency,
+    CarrySummary,
+    CarryTypedFields,
     CompactionResult,
+    ContextCarryStrategy,
     ContextStrategy,
     ConversationTurn,
     ExponentialCompact,
@@ -21,6 +31,7 @@ from crawfish.runtime.context_strategy import (
     Summarize,
     estimate_tokens,
     manage_context,
+    resolve_carry_strategy,
     resolve_strategy,
 )
 from crawfish.runtime.mcp import allowed_mcp_tools, build_mcp_config, resolve_secret
@@ -73,6 +84,16 @@ __all__ = [
     "estimate_tokens",
     "resolve_strategy",
     "manage_context",
+    # transferable typed Context artifact + carry strategies
+    "Context",
+    "ContextEntry",
+    "ARTIFACT_THRESHOLD_BYTES",
+    "ContextCarryStrategy",
+    "CarryFull",
+    "CarryRecency",
+    "CarrySummary",
+    "CarryTypedFields",
+    "resolve_carry_strategy",
     # mcp
     "build_mcp_config",
     "allowed_mcp_tools",
