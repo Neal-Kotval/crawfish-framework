@@ -47,10 +47,13 @@ _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 
 def _as_mapping(value: object) -> dict[str, JSONValue] | None:
-    """Best-effort view of an Output value as a string->value mapping.
+    """View an Output value as a string->value mapping for field metrics.
 
-    Output values are often plain strings (``RunResult.text``). When the string
-    is JSON-encoding an object we decode it so field/format metrics still apply.
+    Post-CRA-172 a Definition with a typed (RECORD) output schema already carries a
+    ``dict`` in ``Output.value`` — that path is read directly with no decoding. The
+    string-decode fallback survives only for the **back-compat** case: a Definition with
+    *no* declared outputs keeps a plain-string ``Output.value`` (``RunResult.text``);
+    when that string JSON-encodes an object we decode it so field metrics still apply.
     """
     if isinstance(value, dict):
         return value

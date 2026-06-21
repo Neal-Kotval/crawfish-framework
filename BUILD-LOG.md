@@ -75,6 +75,31 @@ Non-blocking follow-ups (→ CRA-191): `from_event` typed/legacy disambiguation 
 Follow-up (→ emit sites): stamp real `ts` on MODEL/RUN_FINISH so per-day cost filtering is exact
 (currently `ts=0.0` ⇒ always counted, never undercounts).
 
+### ✅ CRA-172 — Typed input & output validation — phase-2a — DONE (pending merge)
+Branch: `nealkotval/cra-172-...`. Implements the frozen `validate_output`/`validate_inputs`/`structural_diff`.
+
+Shipped:
+- `validation.py` — registry-driven validator (NO new dep): tolerant parse-from-text (code-fence
+  strip + outermost balanced `{...}`/`[...]`, escape-aware), TypeDef walk (PRIMITIVE/RECORD/LIST/
+  OPTIONAL), `canonicalize()` (sorted keys → deterministic equality/diffs). New `ValidationAction`
+  enum (RETRY/REPAIR/DEAD_LETTER) — distinct from the frozen `ValidationFailure` reasons.
+- `run.py` — typed input validation BEFORE any model call (`InputValidationError`); typed
+  `Output.value` (not string); `ValidationAction` policy; REPAIR re-prompt is metered + now has a
+  **pre-flight budget guard** (skips the extra call when `cost_budget.remaining_usd<=0` → dead-letter);
+  tool-result run forces `tainted=True` (injection vector) even with all-static inputs.
+- `metrics.py` — typed values read directly (JSON-decode hack demoted to no-schema fallback).
+- `nodes/router.py` — classifier opts out of input-type/output-schema validation (over-binds free text).
+- demo/triage-bot gains a typed `Triage` RECORD output (end-to-end MockRuntime assert: value is a dict).
+
+DoD gate: ruff clean · format clean · mypy strict clean (70 files) · pytest 414 passed.
+Reviews: Bug **APPROVE**, Security & Architecture **APPROVE** (full 7-point spine pass).
+Back-compat: no-schema Definitions keep `Output.value` as the raw string; all `.value` consumers
+(aggregator/eval/team/sink/source) verified dict-safe.
+
+Non-blocking follow-ups (→ CRA-175 evals/golden-set): `validate_output` keeps only the FIRST
+top-level JSON object when a model emits several (best-effort, no signal); `ValidationFailure.EMPTY_SCHEMA`
+is a reserved-but-unemitted reason. Golden-set string→typed migration helper to be owned by CRA-175.
+
 ## Review-surfaced notes for downstream issues
 - **CRA-185** (taint-conformance suite): add explicit acceptance criterion — `tool`/MCP-result
   emissions MUST be `tainted=True`. The Emission envelope *carries* taint; producers enforce it.
