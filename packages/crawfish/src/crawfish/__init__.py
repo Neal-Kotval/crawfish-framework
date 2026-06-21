@@ -9,6 +9,18 @@ are added here, each placed in its stability tier.
 
 from __future__ import annotations
 
+from crawfish.anomaly import (
+    AnomalyEngine,
+    AnomalyRule,
+    BudgetApproachingRule,
+    CostSpikeRule,
+    EmissionFloodRule,
+    FailureRateRule,
+    Firing,
+    Response,
+    StuckRunRule,
+    read_and_guard,
+)
 from crawfish.artifacts import (
     ArtifactRef,
     ArtifactStore,
@@ -386,6 +398,17 @@ __all__ = [
     "FailureRateAbove",
     "CostSpike",
     "StuckRun",
+    # anomaly engine + auto-halt (CRA-190)
+    "Response",
+    "AnomalyRule",
+    "CostSpikeRule",
+    "FailureRateRule",
+    "StuckRunRule",
+    "EmissionFloodRule",
+    "BudgetApproachingRule",
+    "Firing",
+    "AnomalyEngine",
+    "read_and_guard",
     "dashboard_state",
     "serve_dashboard",
     "emission_dashboard_state",
