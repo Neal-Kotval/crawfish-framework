@@ -259,6 +259,19 @@ from crawfish.triggers import (
     WebhookTrigger,
     verify_webhook,
 )
+from crawfish.tuner import (
+    Candidate,
+    ChainMutator,
+    FewShotMutator,
+    KnobGridMutator,
+    Mutation,
+    PromptMutator,
+    PromptVariantMutator,
+    SearchStrategy,
+    TrialResult,
+    Tuner,
+    TuneResult,
+)
 from crawfish.typesystem import TypeDef, TypeKind, TypeRegistry, default_registry
 from crawfish.validation import (
     StructuralDiff,
@@ -558,4 +571,16 @@ __all__ = [
     "ModelsConfig",
     "resolve_model",
     "Grant",
+    # the Tuner (CRA-176 — deterministic in-house search, ADR 0015)
+    "Mutation",
+    "Candidate",
+    "PromptMutator",
+    "PromptVariantMutator",
+    "KnobGridMutator",
+    "FewShotMutator",
+    "ChainMutator",
+    "SearchStrategy",
+    "TrialResult",
+    "TuneResult",
+    "Tuner",
 ]
