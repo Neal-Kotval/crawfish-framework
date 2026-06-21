@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "openai-sess"}
+{"type": "assistant", "message": {"content": [{"type": "text", "text": "Classifying input."}]}, "session_id": "openai-sess"}
+{"type": "result", "subtype": "success", "total_cost_usd": 0.0031, "result": "{\"category\": \"feature\", \"severity\": \"low\", \"summary\": \"add dark mode\"}", "session_id": "openai-sess"}

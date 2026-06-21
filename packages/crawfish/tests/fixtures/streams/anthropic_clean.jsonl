@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "anthropic-sess"}
+{"type": "assistant", "message": {"content": [{"type": "text", "text": "Triaging the ticket."}]}, "session_id": "anthropic-sess"}
+{"type": "result", "subtype": "success", "total_cost_usd": 0.0042, "result": "{\"category\": \"bug\", \"severity\": \"high\", \"summary\": \"login fails\"}", "session_id": "anthropic-sess"}

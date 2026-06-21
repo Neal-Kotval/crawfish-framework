@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "local-sess"}
+{"type": "assistant", "message": {"content": [{"type": "text", "text": "Summarizing."}]}, "session_id": "local-sess"}
+{"type": "result", "subtype": "success", "total_cost_usd": 0.0, "result": "{\"category\": \"question\", \"severity\": \"low\", \"summary\": \"how to deploy\"}", "session_id": "local-sess"}

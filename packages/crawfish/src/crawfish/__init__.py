@@ -200,11 +200,20 @@ from crawfish.store import (
     StoreMigrationError,
 )
 from crawfish.testing import (
+    INJECTION_INPUTS,
+    STREAM_FIXTURES,
+    TaintCase,
     assert_rubric,
     assert_snapshot,
+    assert_taint_conformance,
+    canned_transport,
+    injection_tool_result,
+    load_stream_fixture,
     replaying,
     run_fixtures,
+    scoring_runtime,
     snapshot_match,
+    taint_conformance_cases,
 )
 from crawfish.triggers import (
     Cron,
@@ -428,6 +437,16 @@ __all__ = [
     "run_fixtures",
     "assert_rubric",
     "replaying",
+    # CRA-185 shared determinism harness
+    "STREAM_FIXTURES",
+    "canned_transport",
+    "load_stream_fixture",
+    "INJECTION_INPUTS",
+    "injection_tool_result",
+    "scoring_runtime",
+    "TaintCase",
+    "taint_conformance_cases",
+    "assert_taint_conformance",
     "generate_containerfile",
     "plan_build",
     "write_containerfile",
