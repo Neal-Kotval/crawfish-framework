@@ -81,15 +81,6 @@ welcome first contribution is a connector.
 
 Browse the docs locally with `just docs` (serves at http://127.0.0.1:8000).
 
-## Status
-
-**Phase 1 is complete** — the local trust loop runs with no hosted dependency: a multi-item
-Source fans out, a Definition team runs per item via `claude -p`, an Aggregator reduces, a
-Router branches, and a Sink writes — typed, versioned, and benchmarked, with retries,
-dead-letter, and crash-resume. `ruff` + `mypy --strict` clean, the test suite green and
-deterministic (no live model calls), and the docs build as a MkDocs site. See the
-[Roadmap](ROADMAP.md) for what's next and [CLAUDE.md](CLAUDE.md) for development guidance.
-
 ## Contributors
 
 Thanks to everyone who has helped build Crawfish. 🦞
