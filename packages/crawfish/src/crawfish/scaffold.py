@@ -26,6 +26,14 @@ runtime = "command"   # claude -p — zero API key
 [profiles.prod]
 runtime = "managed"   # CMA
 
+[models]
+default = "claude-opus-4-8"   # fallback for unpinned agents — change freely
+
+[models.aliases]
+# Name a model once, reuse it across agents (any provider). Each alias must map
+# to a concrete provider:model id, never to another alias.
+fast = "claude-haiku-4-5"
+
 [capabilities]
 secrets = []
 egress = []

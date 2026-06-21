@@ -52,9 +52,12 @@ def _cmd_dev(args: argparse.Namespace) -> int:
         inputs[key] = value
 
     if args.estimate:
+        from crawfish.config import load_models_config
         from crawfish.cost import estimate_cost
 
-        est = estimate_cost(definition, items=args.items)
+        # Resolve models the same way the runtime will (aliases + configured default),
+        # so the preview never drifts from the actual run.
+        est = estimate_cost(definition, items=args.items, config=load_models_config())
         print(
             f"estimated cost: ${est.total_usd:.4f} for {args.items} item(s) "
             f"(team of {est.team_size})"

@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from crawfish.core.context import BudgetExceeded, CostBudget
-from crawfish.provider import resolve_model
+from crawfish.provider import ModelsConfig, resolve_model
 from crawfish.runtime.command import DEFAULT_MODEL
 
 if TYPE_CHECKING:
@@ -77,14 +77,15 @@ class CostEstimate(BaseModel):
     per_model: dict[str, float] = Field(default_factory=dict)
 
 
-def _resolve_model(model: str | list[str] | None) -> str:
+def _resolve_model(model: str | list[str] | None, config: ModelsConfig | None = None) -> str:
     """Resolve an agent's ``model`` field to a single id (delegates to the shared
     resolver so the estimate can never drift from what the runtime actually runs).
 
-    Unpinned (``None``) agents fall back to :data:`DEFAULT_MODEL`; a list pins to
-    its first entry. See :func:`crawfish.provider.resolve_model`.
+    The same ``config`` the runtime uses supplies named aliases + the configured
+    project default; unpinned (``None``) agents fall back to :data:`DEFAULT_MODEL`
+    only when no ``config.default`` is set. See :func:`crawfish.provider.resolve_model`.
     """
-    return resolve_model(model, default=DEFAULT_MODEL)
+    return resolve_model(model, default=DEFAULT_MODEL, config=config)
 
 
 def estimate_cost(
@@ -92,6 +93,7 @@ def estimate_cost(
     *,
     items: int = 1,
     model_prices: dict[str, float] | None = None,
+    config: ModelsConfig | None = None,
 ) -> CostEstimate:
     """Predict the dollar cost of running ``definition`` over ``items`` items.
 
@@ -99,7 +101,9 @@ def estimate_cost(
     priced from ``model_prices`` (defaults to :data:`DEFAULT_MODEL_PRICES`) by
     each agent's resolved model id. Unknown model ids are treated as free so a
     missing price never silently inflates the estimate — pass a fuller table for
-    sharper numbers.
+    sharper numbers. Pass the project's ``config`` (:class:`ModelsConfig`) so the
+    preview resolves aliases + the configured default exactly as the runtime will
+    (no second source of truth).
     """
     if items < 0:
         raise ValueError("items must be >= 0")
@@ -108,7 +112,7 @@ def estimate_cost(
     per_model: dict[str, float] = {}
     per_item = 0.0
     for agent in definition.team.agents:
-        model = _resolve_model(agent.model)
+        model = _resolve_model(agent.model, config)
         price = prices.get(model, 0.0)
         per_item += price
         per_model[model] = per_model.get(model, 0.0) + price * items
