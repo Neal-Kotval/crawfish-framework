@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from crawfish.core.context import BudgetExceeded, CostBudget
 from crawfish.provider import ModelsConfig, resolve_model
+from crawfish.routing import RoutingPolicy, route_decision
 from crawfish.runtime.command import DEFAULT_MODEL
 
 if TYPE_CHECKING:
@@ -94,6 +95,7 @@ def estimate_cost(
     items: int = 1,
     model_prices: dict[str, float] | None = None,
     config: ModelsConfig | None = None,
+    routing: RoutingPolicy | None = None,
 ) -> CostEstimate:
     """Predict the dollar cost of running ``definition`` over ``items`` items.
 
@@ -104,6 +106,14 @@ def estimate_cost(
     sharper numbers. Pass the project's ``config`` (:class:`ModelsConfig`) so the
     preview resolves aliases + the configured default exactly as the runtime will
     (no second source of truth).
+
+    When a :class:`~crawfish.routing.RoutingPolicy` is supplied (CRA-182 smart
+    routing), each agent's model is resolved through the **same**
+    :func:`crawfish.routing.route_decision` the runtime
+    (:class:`~crawfish.runtime.routing_runtime.RoutingRuntime`) uses — which in turn
+    calls the single shared :func:`crawfish.provider.resolve_model`. So a routed step
+    (e.g. a cheap step sent to ``"local"``) is previewed at exactly the model that will
+    run: the estimate cannot drift from the routed run (CRA-186).
     """
     if items < 0:
         raise ValueError("items must be >= 0")
@@ -112,7 +122,13 @@ def estimate_cost(
     per_model: dict[str, float] = {}
     per_item = 0.0
     for agent in definition.team.agents:
-        model = _resolve_model(agent.model, config)
+        if routing is not None:
+            # Route through the shared decision point so preview == run (no second path).
+            model = route_decision(
+                definition, agent.role, policy=routing, default=DEFAULT_MODEL, config=config
+            ).resolved
+        else:
+            model = _resolve_model(agent.model, config)
         price = prices.get(model, 0.0)
         per_item += price
         per_model[model] = per_model.get(model, 0.0) + price * items

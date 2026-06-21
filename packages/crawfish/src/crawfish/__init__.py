@@ -29,6 +29,7 @@ from crawfish.artifacts import (
 )
 from crawfish.batch import Anomaly, Batch, Task
 from crawfish.build import BuildPlan, generate_containerfile, plan_build, write_containerfile
+from crawfish.cache import CacheStats, CachingRuntime, cache_key
 from crawfish.ccexport import (
     ClaudeCodeAgent,
     ClaudeCodeSkill,
@@ -190,18 +191,32 @@ from crawfish.observer import (
 from crawfish.output import Output, WireError, check_wire, output_satisfies_inputs
 from crawfish.provider import ModelsConfig, Provider, ProviderPolicy, resolve_model
 from crawfish.retry import ItemResult, ItemStatus, RetryPolicy
+from crawfish.routing import (
+    CostTier,
+    RoutingDecision,
+    RoutingPolicy,
+    RoutingRule,
+    agent_tier,
+    route_decision,
+    route_model,
+    routing_emission,
+)
 from crawfish.run import InputBindingError, Run, RunStatus, RunSuspended
 from crawfish.runtime import (
     AgentRuntime,
     ClientProvider,
     ClientRuntime,
     CommandRuntime,
+    LocalHTTPProvider,
+    LocalTransport,
     ManagedRuntime,
     MockProvider,
     MockRuntime,
+    OpenAIChatRequest,
     ProviderFailover,
     ProviderRuntime,
     RecordReplayRuntime,
+    RoutingRuntime,
     RunRequest,
     RunResult,
     RuntimeEvent,
@@ -357,6 +372,10 @@ __all__ = [
     "expand_candidates",
     "MockProvider",
     "ClientProvider",
+    "LocalHTTPProvider",
+    "LocalTransport",
+    "OpenAIChatRequest",
+    "RoutingRuntime",
     "RecordReplayRuntime",
     "RunRequest",
     "RunResult",
@@ -483,6 +502,18 @@ __all__ = [
     "BudgetState",
     "CostMeter",
     "spent_today",
+    # cost & CPU optimization (CRA-182 — smart routing, replay caching, local models)
+    "CostTier",
+    "RoutingRule",
+    "RoutingPolicy",
+    "RoutingDecision",
+    "agent_tier",
+    "route_model",
+    "route_decision",
+    "routing_emission",
+    "cache_key",
+    "CacheStats",
+    "CachingRuntime",
     "inspect_run",
     "tail_events",
     "format_report",
