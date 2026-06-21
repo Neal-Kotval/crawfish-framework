@@ -6,11 +6,31 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-mkdocs-blue.svg)](https://neal-kotval.github.io/crawfish/)
 
-**Agents for bulk work over your data.** Author a pipeline as a directory —
-`Source → Batch (fan-out) → Aggregator (reduce) → Router (branch) → Sink` — and run it
-locally via `claude -p` with **zero API key**. Typed, versioned, benchmarked.
+**Build agents like software.** Crawfish is a framework for defining an agent — or a whole
+team of them — as typed, versioned components in a directory, running it locally against
+`claude -p` or a local model, and treating the result as something you can test, diff, and
+improve, not a prompt you keep poking at.
 
-Think *dbt / Airflow for agents*, not another chatbot SDK.
+It brings the things you expect from real engineering to agent work:
+
+- **Agents as code.** The agents, their tools, the data shapes they pass, and the policies
+  that govern them are plain files you check into git — infrastructure-as-code for local
+  model work, not settings buried in a notebook.
+- **Composable by design.** Small typed nodes snap together into larger pipelines. One
+  node's output wires to the next only when their shapes match, so a team is assembled from
+  parts the way a program is.
+- **Deterministic and testable.** Typed inputs and outputs, structural type-checking, frozen
+  versions, and record/replay make a run reproducible. Snapshot it, assert on it, and gate
+  changes in CI — no live model required.
+- **Built to improve.** Score a pipeline with rubrics and evals, then let the tuner search
+  for better prompts and settings and promote the winner. Pipelines get better on purpose.
+- **Local-first.** Everything runs on your machine by default. Cloud and scale are a driver
+  swap, not a rewrite.
+
+Running a job over your data in bulk is one thing you can build this way — fan it out across
+thousands of items, reduce, branch, and write the results somewhere
+(`Source → Batch → Aggregator → Router → Sink`). The same building blocks just as easily
+express a single sharp agent, a multi-agent team, or a scheduled automation.
 
 ## Install
 
@@ -23,7 +43,6 @@ Pick the line that matches what you're doing:
 | **Try it with zero Python setup** | `curl -LsSf https://raw.githubusercontent.com/Neal-Kotval/crawfish/main/install.sh \| sh` | Bootstraps `uv` if needed, then installs the CLI |
 
 The `curl` line is a thin wrapper over the same PyPI package — see [`install.sh`](install.sh).
-(Once a `crawfish.dev` domain is set up, that URL shortens to `https://crawfish.dev/install.sh`.)
 
 Then run the zero-key demo:
 
@@ -32,15 +51,13 @@ craw init my-app
 craw dev my-app/definitions/triage-bot -i project=acme -i "ticket_body=login is broken"
 ```
 
-The Source fans the item out, a Definition team runs per item on a mock runtime (no key
-needed), an Aggregator reduces, a Router branches, and a Sink writes — and the Output
-comes back typed.
+A team of agents runs on a mock runtime — no API key, no cost — and the result comes back
+typed. Swap in `claude -p` for a real run; it's a runtime change, not a code change.
 
 ## Develop from source
 
 This repo is a [`uv`](https://docs.astral.sh/uv/) workspace and uses
-[`just`](https://github.com/casey/just) as its task runner — run `just` to see every
-recipe.
+[`just`](https://github.com/casey/just) as its task runner — run `just` to see every recipe.
 
 ```bash
 just deps              # install the workspace + dev deps (uv sync)
@@ -49,31 +66,42 @@ just check             # lint + typecheck + the full test suite
 ```
 
 Or drive the CLI directly with `uv run craw …`. See
-[`CONTRIBUTING.md`](.github/CONTRIBUTING.md) to go from a clone to a merged PR — the most welcome
-first contribution is a connector.
+[`CONTRIBUTING.md`](.github/CONTRIBUTING.md) to go from a clone to a merged PR — the most
+welcome first contribution is a connector.
 
 ## Docs
 
 📖 **Full documentation: [neal-kotval.github.io/crawfish](https://neal-kotval.github.io/crawfish/)**
 
-- [Product](docs/product/PRODUCT.md) — positioning, hero use case, personas
-- [Architecture](docs/architecture/ARCHITECTURE.md) — the three seams · [ADRs](docs/architecture/decisions)
-- [Security spine](docs/architecture/SECURITY.md)
-- [Getting started](docs/guide/getting-started.md)
+- [Getting started](https://neal-kotval.github.io/crawfish/guide/getting-started/) — install and run your first agent in minutes
+- [Reference](https://neal-kotval.github.io/crawfish/reference/) — every public symbol, explained, with runnable examples
+- [Architecture](docs/architecture/ARCHITECTURE.md) — the three swappable seams · [ADRs](docs/architecture/decisions)
+- [Security](docs/architecture/SECURITY.md) — the prompt-injection boundary, secrets, and taint
 - [Roadmap](ROADMAP.md) — what shipped and what's next
-- [Releasing](.github/RELEASING.md) — the release process + semver/stability policy · [Changelog](CHANGELOG.md)
 
 Browse the docs locally with `just docs` (serves at http://127.0.0.1:8000).
 
 ## Status
 
-**Phase 1 is complete** — the local trust loop runs with no hosted dependency: a
-multi-item Source fans out, a Definition team runs per item via `claude -p`, an
-Aggregator reduces, a Router branches, and a Sink writes — typed, versioned, and
-benchmarked, with retries, dead-letter, and crash-resume. `ruff` + `mypy --strict`
-clean, the test suite green and deterministic (no live model calls), and the docs build
-as a MkDocs site. See the [Roadmap](ROADMAP.md) for what's next and
-[CLAUDE.md](CLAUDE.md) for development guidance.
+**Phase 1 is complete** — the local trust loop runs with no hosted dependency: a multi-item
+Source fans out, a Definition team runs per item via `claude -p`, an Aggregator reduces, a
+Router branches, and a Sink writes — typed, versioned, and benchmarked, with retries,
+dead-letter, and crash-resume. `ruff` + `mypy --strict` clean, the test suite green and
+deterministic (no live model calls), and the docs build as a MkDocs site. See the
+[Roadmap](ROADMAP.md) for what's next and [CLAUDE.md](CLAUDE.md) for development guidance.
+
+## Contributors
+
+Thanks to everyone who has helped build Crawfish. 🦞
+
+[![Contributors](https://contrib.rocks/image?repo=Neal-Kotval/crawfish)](https://github.com/Neal-Kotval/crawfish/graphs/contributors)
+
+New here? The most welcome first contribution is a connector — see
+[`CONTRIBUTING.md`](.github/CONTRIBUTING.md).
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Neal-Kotval/crawfish&type=Date)](https://star-history.com/#Neal-Kotval/crawfish&Date)
 
 ## License
 
