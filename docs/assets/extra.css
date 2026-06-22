@@ -250,6 +250,50 @@
   box-shadow: var(--craw-glass-shadow);
 }
 
+/* ============================================================================
+   DISCORD CALLOUT — blurple box on the home page
+   ========================================================================== */
+:root {
+  --craw-discord: #5865f2;
+}
+.md-typeset a.craw-discord {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  margin: 0 0 1.6rem;
+  padding: 0.85rem 1.1rem;
+  border-radius: var(--craw-radius);
+  background: var(--craw-discord);
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(88, 101, 242, 0.32);
+  background-image: none; /* kill the global animated underline */
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+.md-typeset a.craw-discord:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 30px rgba(88, 101, 242, 0.42);
+}
+.craw-discord__logo {
+  flex: 0 0 auto;
+  width: 1.7rem;
+  height: auto;
+  color: #fff;
+}
+.craw-discord__text {
+  font-family: var(--craw-display);
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: #fff;
+}
+.craw-discord__text strong {
+  color: #fff;
+}
+.craw-discord__cta {
+  display: block;
+  margin-top: 0.15rem;
+  font-weight: 600;
+}
+
 /* Section divider rule on h2 — techy hairline */
 .md-typeset h2 {
   border-top: 1px solid var(--craw-glass-line);
