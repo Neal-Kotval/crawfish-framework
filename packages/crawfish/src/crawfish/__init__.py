@@ -102,6 +102,7 @@ from crawfish.emission import (
     read_emissions,
 )
 from crawfish.engine import Engine, run_pipeline
+from crawfish.escalate import abstention_threshold, extract_confidence
 from crawfish.eval import (
     EvalCase,
     GoldenSet,
@@ -149,6 +150,7 @@ from crawfish.manage import PipelineStatus, format_table, manage_list, restart_t
 from crawfish.memory import Memory
 from crawfish.metrics import (
     Benchmark,
+    CalibrationReport,
     FieldExactMatch,
     Metric,
     NumericTolerance,
@@ -156,6 +158,7 @@ from crawfish.metrics import (
     SchemaConformance,
     SetOverlap,
     StructuralMatch,
+    calibrate,
     compare,
     confidence_threshold,
     field_exact_match,
@@ -336,14 +339,23 @@ from crawfish.tuner import (
     Candidate,
     ChainMutator,
     FewShotMutator,
+    KnobDomain,
     KnobGridMutator,
     Mutation,
+    Objective,
+    ObjectiveForm,
+    ObjectiveScore,
     PromptMutator,
     PromptVariantMutator,
     SearchStrategy,
     TrialResult,
     Tuner,
     TuneResult,
+    TuneSpec,
+    eval,
+    guard_consequential,
+    train,
+    tune_spec_sha,
 )
 from crawfish.typesystem import TypeDef, TypeKind, TypeRegistry, default_registry
 from crawfish.validation import (
@@ -766,4 +778,20 @@ __all__ = [
     "Recurse",
     "RecurseResult",
     "UnboundedRecursionError",
+    # Tunable ML library — two-axis mode (train/eval) + tunable knobs + cost-regularized objective
+    # (CRA-209, CRA-213)
+    "KnobDomain",
+    "TuneSpec",
+    "tune_spec_sha",
+    "train",
+    "eval",
+    "guard_consequential",
+    "Objective",
+    "ObjectiveForm",
+    "ObjectiveScore",
+    # Calibration — variance / ECE / abstention (CRA-211)
+    "calibrate",
+    "CalibrationReport",
+    "extract_confidence",
+    "abstention_threshold",
 ]
