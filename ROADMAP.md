@@ -42,6 +42,31 @@ crash-resume. What's in the box today:
   `craw build` → container; a MkDocs docs site; an API-stability contract (stable /
   experimental / deprecated tiers + semver).
 
+## The agent language — foundations landed (in progress)
+
+Phase 2 includes a larger bet: an **agent language** where composition operators
+(Refine, Program, Quorum, Escalate) and a Tuner make agents self-improving over your
+data. The first slice — the *foundational primitives* those operators stand on — has
+landed. These are substrate contracts, **not** the headline operators (which are still
+ahead):
+
+- **A canonical Output content hash** — one content-identity primitive every ledger and
+  replay path keys off.
+- **An execution-coordinate cassette key** — record/replay now distinguishes each re-run
+  of a leaf (sample, iteration, visit, depth), and folds tenancy into run identity.
+- **A loop/program ledger** — per-`(item, edge, visit)` and per-recursion-depth resume
+  with deterministic loop identity, so resuming a loop re-charges \$0 for work already done.
+- **One cost model with a composition law** — a three-number interval
+  (lower-bound / expected / worst-case) that multiplies along operator nesting.
+- **A statistical gate algebra** — paired, variance-aware promotion gates plus a
+  fail-closed precision gate for consequential guards, over a shared experiment-design spec.
+- **Decode-knob ownership, a determinism tier, a correction corpus, and a Store-backed
+  train-mode borrow** — the seams the Tuner and the operators need.
+
+These foundations and their security and migration guarantees are documented in
+[`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md) and
+[`docs/architecture/SECURITY.md`](docs/architecture/SECURITY.md).
+
 ## Phase 2 — themes (next)
 
 Phase 2 turns the local trust loop into something teams run together. Directions we're

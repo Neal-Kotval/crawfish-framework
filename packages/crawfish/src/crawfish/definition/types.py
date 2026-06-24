@@ -10,13 +10,19 @@ leaning on Claude's hierarchical subagent model — no bespoke message bus.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
 from crawfish.core.ids import new_id
 from crawfish.core.types import Parameter, Policy
 from crawfish.versioning.version import Freezable, Version
+
+if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
+    from crawfish.borrow import Borrow
+    from crawfish.store.base import Store
 
 __all__ = [
     "Coordination",
@@ -234,6 +240,24 @@ class Definition(Freezable):
 
     def agent(self, role: str) -> AgentSpec | None:
         return next((a for a in self.team.agents if a.role == role), None)
+
+    def mutable(self, store: Store, *, org_id: str = "local") -> AbstractContextManager[Borrow]:
+        """Acquire an exclusive borrow on this Definition for training/mutation (F-7).
+
+        Thin delegator to :func:`crawfish.borrow.mutable` — the documented follow-up
+        that wires the borrow-lifetime semantics onto ``Definition`` without this module
+        owning the borrow machinery::
+
+            with defn.mutable(store) as draft:   # exclusive — train mode
+                ...                               # no concurrent holder
+            # released on exit (even on exception)
+
+        Raises :class:`crawfish.borrow.ExclusiveBorrowError` if another holder already
+        owns the borrow; every key is ``org_id``-scoped (tenancy isolation).
+        """
+        from crawfish.borrow import mutable as _mutable
+
+        return _mutable(self, store, org_id=org_id)
 
 
 # keep Version importable from here for the loader's convenience
