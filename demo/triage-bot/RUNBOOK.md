@@ -598,7 +598,7 @@ recorded state).
 > folded 3 parts`; `refine … -> satisfied`) and the full suite is green — both the recurse and
 > Refine paths pass off the mock runtime; the live non-determinism is purely the real-critic draw.
 
-### FINAL M2 live certification — RUN BY `verifier-m2` (2026-06-24, `claude-haiku-4-5`, commit `9768030`) — ⚠️ FAIL: `_refine_step_ok` `metered>$0` breaks the `$0` REPLAY of a justified `no_progress`
+### FINAL M2 live certification — RUN BY `verifier-m2` (2026-06-24, `claude-haiku-4-5`, commit `9768030`) — ⚠️ FAIL: `_refine_step_ok` `metered>$0` breaks the `$0` REPLAY of a justified `no_progress` — RESOLVED by commit `0dd4dcf` (see next section)
 
 Ran the final certification against the live-gate fix (commit `9768030`, `fix(demo): live gate
 certifies a justified bounded Refine outcome`). Real `claude -p` (`claude 2.1.187`, authed).
@@ -682,3 +682,74 @@ deterministic-PASS until `_refine_step_ok` tolerates a `$0` replay.
 | 4 | **Budget respected** | ✅ | `worst=72 calls=$4.320 <= budget=$4.32`; fresh-record total `$4.250 ≤ $4.32`, no `BudgetExceeded`. |
 | 5 | **Tenant isolation** | ✅ | `tenant isolation: org-B gold cases=0`; `org_b_cases == 0`, `org_a_cases == 6`. |
 | 6 | **Bit-identical replay** | ⚠️ | shas reproduce bit-for-bit (refine `f36fdc186b51`, recurse `0213e65c2902`, frozen `9dfc8be045b2`, loop `950276dec417`) AND replay spend is `$0.00` — but the replayed run **FAILs** because `_refine_step_ok` rejects the `$0` `no_progress` replay (defect above). The replay reproduces; the *pass verdict* does not. |
+
+### M2 live certification — CERTIFIED ✅ (RUN BY `verifier-m2`, 2026-06-24, `claude-haiku-4-5`, commit `0dd4dcf`)
+
+The replay-metering regression above is **FIXED** (commit `0dd4dcf`, `fix(demo): $0 Refine
+replay passes the live gate (record-scoped metering)`). `DemoResult` now carries a
+`recorded: bool` flag (True only on a fresh record, False on a `$0` replay / mock), and
+`_refine_step_ok()` applies the metering lower bound **only when `recorded`**
+(`self_improve.py:181`: `metered = (self.refine_spent_usd > 0.0) if self.recorded else True`).
+A `$0` replay now passes; a fresh record that claims a stop but spent `$0` is still rejected.
+
+**The live gate is now deterministic on BOTH record and replay, regardless of the critic's draw.**
+
+**Exact commands run:**
+
+```bash
+rm -rf demo/triage-bot/.crawfish/cassettes && mkdir demo/triage-bot/.crawfish/cassettes
+uv run craw demo --live --model claude-haiku-4-5   # FRESH RECORD → PASS
+uv run craw demo --live --model claude-haiku-4-5   # REPLAY → PASS, total spend $0.00
+```
+
+**Record run — PASS.** Observed refine outcome on this draw: **`satisfied`** (1 draft). Full step line:
+
+```
+[9] refine (verifier-gated): 1 drafts -> satisfied (verifier precision=1.00, spent=$0.14, sha 0a98b23f82d3)
+[9] router branch: routed 6 tickets -> 3 branches {'billing': 2, 'bug': 2, 'feature': 2}
+[9] recurse (bounded): 3 levels -> base_case (<= max_depth 4); folded 3 parts, sha 65f96b577626
+=== PASS — 9/9 F-foundations exercised end to end ===
+```
+
+worst_case_usd = **`$4.32`** = budget; fresh-record total spend within the bound, no `BudgetExceeded`.
+
+**Replay run — PASS at TOTAL spend `$0.00`.** Confirmed `passed() == True`,
+`total_spend_usd == 0.00` (not just Refine — the WHOLE scenario replays at `$0`: step-7 scoring,
+step-9 loop, Refine, Router branch, and recurse all hit cassettes; `resume_extra_charges == 0`,
+`refine_resume_spent_usd == recurse_resume_spent_usd == 0.0`). Shas reproduce bit-for-bit:
+**refine `0a98b23f82d3`**, **recurse fold sha `65f96b577626`**, frozen `9dfc8be045b2`. Refine step
+on replay: `spent=$0.00`, recurse resume `$0.00`.
+
+**The `no_progress` `$0`-replay branch (the case that failed commit `9768030`) is now proven to
+PASS.** Verified at the predicate level on `DemoResult._refine_step_ok()` — a justified bounded
+stop on a `$0` replay passes, while broken/unbounded/overspend/$0-record outcomes still FAIL:
+
+| case (live) | `recorded` | `refine_stopped` | `refine_spent_usd` | iters | `_refine_step_ok()` | expected |
+|---|---|---|---|---|---|---|
+| `no_progress` $0 **REPLAY** | False | no_progress | 0.0 | 5 | **True** | ✅ True (was False under `9768030`) |
+| `no_progress` metered RECORD | True | no_progress | 0.72 | 5 | True | ✅ True |
+| `no_progress` $0 **RECORD** (broken — no real call) | True | no_progress | 0.0 | 5 | False | ✅ False (record must meter > 0) |
+| `stuck` dead-letter REPLAY | False | stuck | 0.0 | 5 | False | ✅ False |
+| unbounded (`iters > max`) REPLAY | False | no_progress | 0.0 | 99 | False | ✅ False |
+| overspend RECORD | True | satisfied | 99.0 | 5 | False | ✅ False |
+
+So the gate accepts both a `satisfied` and a justified `no_progress`/`exhausted` draw, on record
+AND on `$0` replay, and still rejects genuinely broken Refine outcomes — the metering lower bound
+is preserved exactly where it is load-bearing (a fresh record).
+
+| # | M2 evidence item | result | proof (this certified run) |
+|---|------------------|--------|-------|
+| 1 | **Router branched correctly** | ✅ | `router branch: routed 6 tickets -> 3 branches {'billing': 2, 'bug': 2, 'feature': 2}`; `router_branches_hit == 3` (> 1). |
+| 2 | **Recurse bounded + folded** | ✅ | `recurse (bounded): 3 levels -> base_case (<= max_depth 4); folded 3 parts`, sha `65f96b577626`. `recurse_stopped == "base_case"`, depth 3, 3 parts — stable across every draw. |
+| 3 | **$0 durable resume** | ✅ | `recurse resume ($0): resume spend=$0.00`; `recurse_resume_spent_usd == 0.0`. |
+| 4 | **Budget respected** | ✅ | `worst=72 calls=$4.320 <= budget=$4.32`; within bound, no `BudgetExceeded`. |
+| 5 | **Tenant isolation** | ✅ | `tenant isolation: org-B gold cases=0`; `org_b_cases == 0`, `org_a_cases == 6`. |
+| 6 | **Bit-identical replay** | ✅ | replay PASSES at **total spend `$0.00`**; shas reproduce bit-for-bit (refine `0a98b23f82d3`, recurse fold sha `65f96b577626`, frozen `9dfc8be045b2`); `refine_resume_spent_usd == recurse_resume_spent_usd == 0.0`. |
+
+**Verdict: ✅ CERTIFIED — all six M2 evidence items PASS; the live `craw demo --live` gate is
+deterministic on record AND `$0` replay, for both `satisfied` and justified `no_progress`/
+`exhausted` Refine draws.** The recurse base-case fix (CRA-208) and the Refine-operator gate
+(M1) both hold under the real model. This run is the M2 PR gate.
+
+> Deterministic `uv run craw demo` prints `PASS — 9/9` and the full suite is green (877 passed).
+> The on-disk cassette state is this certified PASS run; `uv run craw demo --live` replays it at `$0`.
