@@ -92,6 +92,51 @@ The [`craw export --claude-code`](../guide/claude-code-export.md) output carries
 secrets** — it maps tool/MCP *references* only (the `tools` allowlist), never an `auth`
 reference or a credential value, so the generated file is safe to commit.
 
+## Agent-language foundations (Milestone F)
+
+The foundational primitives behind the agent-language operators uphold the spine and add
+five guarantees. Identity additions are recorded in
+[ADR 0019](decisions/0019-content-hash-version-bump-and-migration.md).
+
+1. **Tenancy enters run identity.** `org_id` now folds into the replay cassette `_key`
+   (F-1, when `!= "local"`) and is carried on **every** `ledger_loop` row (F-2). Two
+   tenants can no longer collide on a cassette, and a resume in org `b` sees **none** of
+   org `a`'s completed loop iterations — cross-tenant resume cannot replay another org's
+   work (`test_cross_org_isolation`, `test_depth_cross_org_isolation`).
+
+2. **Correction-corpus poisoning is gated (Security Gap S4).** Corrections feed
+   guards/verifiers as **ground truth**, so a poisoned corpus is an attack surface
+   (F-4). Every `correction` emission declares its `provenance` (`TRUSTED` / `UNTRUSTED`)
+   — **who** authored it — and carries the existing `tainted` marker propagated from any
+   FLUID-derived value (the corrected→guard path is taint-analyzed). The admission gate in
+   `GoldenSet.from_corrections` is an **AND**: a correction becomes trusted ground truth
+   **only if** `provenance == TRUSTED` **AND** `tainted is False`. Anything `UNTRUSTED`
+   *or* fluid-tainted is **quarantined** — it stays on the ledger for audit but never
+   gates anything. The AND is load-bearing: a fluid-derived value cannot become ground
+   truth even if mislabelled `TRUSTED` (taint wins). `emit_correction` records every
+   attempt (audit completeness); the trust decision is made at admission, not at write.
+
+3. **The precision gate fails closed (the CL-2 safety inversion).** `eval.precision_gate`
+   is an **absolute** decision-quality gate for consequential verifiers/guards/sinks. It
+   **fails closed**: an un-benchmarked verifier (`baseline_exists is False`), no positive
+   predictions, or measured precision below `min_precision` all **raise**
+   `VerifierNotGated`. The old default was "admit unless proven bad"; the new default is
+   **"reject unless measured good."** A consequential verifier or guard must pass
+   `precision_gate` against a real baseline before it may gate anything.
+
+4. **No decode field escapes run identity.** Every decode parameter enters the
+   replay/version boundary (F-5): the tunable knobs (`temperature` / `top_p` /
+   `sample_k`) via the Definition `version.sha`, and the per-call `decode_seed` via the
+   F-1 cassette key. So two distinct decode settings can no longer replay identically — a
+   silently-different decode cannot reuse another's cassette (closes the TS-8 hole).
+
+5. **Mutable borrows are tenancy-scoped and Store-enforced.** The train-mode exclusive
+   borrow (F-7) keys both its idempotency claim and its `borrow_lock` record on `org_id`,
+   so a borrow held by org `a` never blocks or is visible to org `b`
+   (`test_cross_tenant_does_not_block`). Enforcement lives in the Store (no in-process
+   registry), so exclusivity holds across processes and survives the SQLite→Postgres swap
+   — see [ADR 0018](decisions/0018-borrow-lifetime-semantics.md).
+
 ## Review gate
 
 Every feature is audited against these invariants before it ships. The security reviewer

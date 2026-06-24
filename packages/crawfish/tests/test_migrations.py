@@ -73,7 +73,7 @@ def test_round_trip_across_two_versions_preserves_data(tmp_path: Path) -> None:
 
     s = SqliteStore(db)
     try:
-        assert _user_version(db) == CURRENT_SCHEMA_VERSION == 2
+        assert _user_version(db) == CURRENT_SCHEMA_VERSION
         assert _has_index(db, "idx_events_org_run")  # the v2 artifact now exists
         assert s.get_record("run", "r1") == {"a": 1}  # pre-existing row survived
     finally:

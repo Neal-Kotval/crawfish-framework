@@ -72,6 +72,7 @@ def test_emission_kind_taxonomy_is_closed_and_covered() -> None:
         "metric",
         "secret_lease",
         "jail_violation",
+        "correction",
     }
     assert {k.value for k in EmissionKind} == expected
     # Required-attrs schema covers every kind (no kind left unspecified).

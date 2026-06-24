@@ -45,6 +45,8 @@ def _valid_attrs(kind: EmissionKind) -> dict[str, object]:
         "ref": "GITHUB_TOKEN",
         "node_id": "node-1",
         "attempt": "egress:evil.com",
+        "correction_type": "human_revert",
+        "provenance": "trusted",
     }
     return {key: samples[key] for key in REQUIRED_ATTRS[kind]}
 

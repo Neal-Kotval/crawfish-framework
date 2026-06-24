@@ -362,6 +362,48 @@ def _cmd_supervise(args: argparse.Namespace) -> int:
     return supervise_main(args.name, args.dir, schedule=args.schedule)
 
 
+# --------------------------------------------------------------------------- demo
+def _cmd_demo(args: argparse.Namespace) -> int:
+    """Run the Milestone-F all-nine-features end-to-end scenario.
+
+    ``craw demo`` runs it deterministically on the mock runtime (zero cost, CI-safe);
+    ``craw demo --live`` runs it against the real ``claude -p`` backend and records
+    fresh cassettes. See ``demo/triage-bot/self_improve.py`` and ``RUNBOOK.md``.
+    """
+    import importlib.util
+    from pathlib import Path as _Path
+
+    # The scenario lives beside the demo project (not inside the package), so load it
+    # by path. ``--dir`` lets a caller point at a relocated copy of demo/triage-bot.
+    candidates = []
+    if args.dir is not None:
+        candidates.append(_Path(args.dir).resolve())
+    else:
+        # Default: cwd's demo/triage-bot, else the repo's (relative to this package).
+        candidates.append(_Path.cwd() / "demo" / "triage-bot")
+        repo_demo = _Path(__file__).resolve().parents[4] / "demo" / "triage-bot"
+        candidates.append(repo_demo)
+    demo_dir = next((c for c in candidates if (c / "self_improve.py").exists()), candidates[0])
+    module_path = demo_dir / "self_improve.py"
+    if not module_path.exists():
+        print(f"no demo scenario at {module_path}; pass --dir <demo/triage-bot>")
+        return 1
+    spec = importlib.util.spec_from_file_location("crawfish_demo_self_improve", module_path)
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        print(f"could not load {module_path}")
+        return 1
+    module = importlib.util.module_from_spec(spec)
+    # Register before exec so dataclass/typing forward-ref resolution can find the module.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    result = module.run_self_improvement(
+        live=args.live, record=args.live, budget=args.budget, model=args.model
+    )
+    print(result.summary())
+    return 0 if result.passed() else 1
+
+
 # --------------------------------------------------------------------------- init
 def _cmd_init(args: argparse.Namespace) -> int:
     from crawfish.scaffold import scaffold_project
@@ -388,6 +430,30 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--estimate", action="store_true", help="preview cost instead of running")
     p.add_argument("--items", type=int, default=1, help="item count for --estimate")
     p.set_defaults(func=_cmd_dev)
+
+    p = sub.add_parser("demo", help="run the Milestone-F all-9-features end-to-end scenario")
+    p.add_argument(
+        "--live",
+        action="store_true",
+        help="run against the real `claude -p` backend and record fresh cassettes",
+    )
+    p.add_argument(
+        "--model",
+        default=None,
+        help="model for the --live backend (default: claude-haiku-4-5, cheap)",
+    )
+    p.add_argument(
+        "--budget",
+        type=float,
+        default=None,
+        help="cost ceiling in USD (default: auto, sized to complete the flow cheaply)",
+    )
+    p.add_argument(
+        "--dir",
+        default=None,
+        help="path to the demo/triage-bot directory (default: ./demo/triage-bot or the repo's)",
+    )
+    p.set_defaults(func=_cmd_demo)
 
     p = sub.add_parser("init", help="scaffold a new project with a working example")
     p.add_argument("name", nargs="?", default="crawfish-app", help="project directory name")

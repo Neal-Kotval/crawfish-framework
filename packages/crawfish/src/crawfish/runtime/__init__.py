@@ -34,6 +34,7 @@ from crawfish.runtime.context_strategy import (
     resolve_carry_strategy,
     resolve_strategy,
 )
+from crawfish.runtime.escalate import EscalatingRuntime, confidence_below
 from crawfish.runtime.local_provider import (
     LocalHTTPProvider,
     LocalTransport,
@@ -76,6 +77,8 @@ __all__ = [
     "LocalTransport",
     "OpenAIChatRequest",
     "RoutingRuntime",
+    "EscalatingRuntime",
+    "confidence_below",
     "RecordReplayRuntime",
     "CassetteMiss",
     "get_runtime",

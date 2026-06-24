@@ -9,10 +9,13 @@ ceiling is carried onto every child Run's ``RunContext``.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
+
 from pydantic import BaseModel, Field
 
 from crawfish.core.compat import parameters_compatible
-from crawfish.core.context import CostBudget, RunContext
+from crawfish.core.context import BudgetExceeded, CostBudget, RunContext
 from crawfish.core.ids import new_id
 from crawfish.core.types import JSONValue, Node, NodeKind, Parameter
 from crawfish.definition.types import Definition
@@ -21,7 +24,10 @@ from crawfish.output import Output, WireError
 from crawfish.run import Run, RunStatus
 from crawfish.runtime.base import AgentRuntime
 
-__all__ = ["Task", "Anomaly", "Batch"]
+__all__ = ["Task", "Anomaly", "Batch", "RunFactory"]
+
+# (definition, inputs, runtime) -> a configured Run for one item.
+RunFactory = Callable[[Definition, dict[str, JSONValue], AgentRuntime], Run]
 
 
 class Task(BaseModel):
@@ -46,6 +52,8 @@ class Batch(Node):
         *,
         runtime: AgentRuntime | None = None,
         cost_budget: CostBudget | None = None,
+        concurrency: int = 1,
+        continue_on_error: bool = False,
     ) -> None:
         self.id = new_id()
         self.name = name
@@ -53,6 +61,18 @@ class Batch(Node):
         self.definition = definition
         self.runtime = runtime
         self.cost_budget = cost_budget
+        # Fan-out concurrency. 1 keeps the deterministic sequential path; >1 runs items
+        # under a bounded semaphore so wall-clock collapses toward the slowest single item
+        # instead of the sum. The shared CostBudget is still enforced across all in-flight
+        # runs, and a breach cancels the rest (cooperative, via the shared CancelToken).
+        self.concurrency = max(1, concurrency)
+        # When True a per-item failure is recorded as an anomaly and the batch keeps going
+        # (the output slot is left empty); when False the first failure aborts the batch
+        # (the original all-or-nothing contract).
+        self.continue_on_error = continue_on_error
+        # Optional Run constructor override: (definition, inputs, runtime) -> Run. Lets a
+        # caller set the validation/repair policy per item without subclassing Batch.
+        self.run_factory: RunFactory | None = None
         self.tasks: list[Task] = []
         self.runs: list[Run] = []
         self.inputs: list[Source[JSONValue] | Output[JSONValue]] = []
@@ -102,13 +122,13 @@ class Batch(Node):
         base_values, item_value_sets = await self._gather_inputs(ctx)
         budget = self.cost_budget or ctx.cost_budget
 
+        n = len(item_value_sets)
+        self.tasks = [Task(description=f"item run in batch {self.name}") for _ in range(n)]
         self.runs = []
-        self.outputs = []
-        for item_values in item_value_sets:
-            ctx.cancel_token.raise_if_cancelled()
+        results: list[Output[JSONValue] | None] = [None] * n
+
+        async def _run_one(i: int, item_values: dict[str, JSONValue]) -> None:
             run_inputs: dict[str, JSONValue] = {**base_values, **item_values}
-            task = Task(description=f"item run in batch {self.name}")
-            self.tasks.append(task)
             child = RunContext(
                 store=ctx.store,
                 batch_id=self.id,
@@ -116,11 +136,22 @@ class Batch(Node):
                 cost_budget=budget,  # shared batch ceiling across all runs
                 cancel_token=ctx.cancel_token,
             )
-            run = Run(self.definition, run_inputs, runtime=rt)
-            self.runs.append(run)
-            output = await run.execute(child, rt)
-            self.outputs.append(output)
+            run = self._make_run(run_inputs, rt)
+            self.runs.append(run)  # asyncio is single-threaded; append is safe between awaits
+            results[i] = await run.execute(child, rt)
 
+        if self.concurrency <= 1:
+            for i, item_values in enumerate(item_value_sets):
+                ctx.cancel_token.raise_if_cancelled()
+                try:
+                    await _run_one(i, item_values)
+                except Exception:
+                    if not self.continue_on_error:
+                        raise
+        else:
+            await self._run_parallel(ctx, item_value_sets, _run_one)
+
+        self.outputs = [o for o in results if o is not None]
         ctx.store.put_record(
             "batch",
             self.id,
@@ -128,6 +159,37 @@ class Batch(Node):
             org_id=ctx.org_id,
         )
         return self.outputs
+
+    def _make_run(self, run_inputs: dict[str, JSONValue], rt: AgentRuntime) -> Run:
+        if self.run_factory is not None:
+            return self.run_factory(self.definition, run_inputs, rt)
+        return Run(self.definition, run_inputs, runtime=rt)
+
+    async def _run_parallel(
+        self,
+        ctx: RunContext,
+        item_value_sets: list[dict[str, JSONValue]],
+        run_one: Callable[[int, dict[str, JSONValue]], Awaitable[None]],
+    ) -> None:
+        """Run items under a bounded semaphore; a budget breach cancels the rest."""
+        sem = asyncio.Semaphore(self.concurrency)
+
+        async def _guarded(i: int, item_values: dict[str, JSONValue]) -> None:
+            async with sem:
+                ctx.cancel_token.raise_if_cancelled()
+                await run_one(i, item_values)
+
+        tasks = [asyncio.ensure_future(_guarded(i, iv)) for i, iv in enumerate(item_value_sets)]
+        gathered = await asyncio.gather(*tasks, return_exceptions=True)
+        first_exc: BaseException | None = None
+        for res in gathered:
+            if isinstance(res, BaseException):
+                # The first budget breach trips the shared token so in-flight runs stop.
+                if isinstance(res, BudgetExceeded):
+                    ctx.cancel_token.cancel()
+                first_exc = first_exc or res
+        if first_exc is not None and not self.continue_on_error:
+            raise first_exc
 
     async def _gather_inputs(
         self, ctx: RunContext

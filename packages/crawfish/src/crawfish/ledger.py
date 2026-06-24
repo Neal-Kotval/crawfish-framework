@@ -10,11 +10,31 @@ pinned to the version it started; a redeploy applies to new pipelines only.
 
 from __future__ import annotations
 
+import hashlib
 from enum import Enum
 
 from crawfish.store.base import Store
 
-__all__ = ["ExecState", "ExecutionLedger"]
+__all__ = ["ExecState", "ExecutionLedger", "compute_loop_id"]
+
+# Version tag for the loop_id derivation. Bump if the composition of the digest
+# inputs ever changes (it changes every derived loop_id, so it is a migration).
+_LOOP_ID_VERSION = 1
+
+
+def compute_loop_id(body_version_sha: str, item_lineage: str, edge_id: str) -> str:
+    """Deterministic identity for a loop instance — a pure function of its inputs.
+
+    ``loop_id = sha256(body_version_sha + item_lineage + edge_id)``. This is a **hard
+    requirement**: a loop's id is derived, never minted with ``new_id()``, so that two
+    independent process invocations of the same loop body over the same item along the
+    same back-edge re-derive the *same* id and resume re-charges $0 for iterations that
+    already completed. Inputs are length-prefixed so distinct concatenations cannot
+    collide (e.g. ``("ab","c")`` vs ``("a","bc")``).
+    """
+    parts = (str(_LOOP_ID_VERSION), body_version_sha, item_lineage, edge_id)
+    payload = "\x00".join(f"{len(p)}:{p}" for p in parts)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 class ExecState(str, Enum):
@@ -89,6 +109,97 @@ class ExecutionLedger:
             for r in self._store.list_records("ledger_item", org_id=self._org)
             if r["pipeline_id"] == pipeline_id and r["status"] == ExecState.DONE.value
         }
+
+    # -- loop / recurse iteration ledger (composite key) --------------------
+    # An EXTENDED key space, distinct from the linear pipeline ledger above. The
+    # pipeline ledger tracks ``step_index: int`` per pipeline; a loop must track
+    # progress per ``(loop_id, item_id, edge_id, visit)`` (and a per-item depth
+    # stack for ``recurse``). Each iteration records the frozen Output reference it
+    # produced (``output_content_sha`` from F-0). Every row carries ``org_id`` so
+    # cross-tenant resume cannot see another org's completed iterations.
+    #
+    # All raw persistence stays in the Store: these methods only orchestrate the
+    # generic record API under the ``ledger_loop`` namespace. The composite key is
+    # encoded into the record id; ``loop_id`` (already a hex digest) and the other
+    # components are joined with a delimiter that cannot appear in a hex digest.
+
+    @staticmethod
+    def _visit_key(loop_id: str, item_id: str, edge_id: str, visit: int) -> str:
+        return f"v|{loop_id}|{item_id}|{edge_id}|{visit}"
+
+    @staticmethod
+    def _depth_key(loop_id: str, item_id: str, depth: int) -> str:
+        return f"d|{loop_id}|{item_id}|{depth}"
+
+    def checkpoint_iteration(
+        self, loop_id: str, item_id: str, edge_id: str, visit: int, output_ref: str
+    ) -> None:
+        """Record that ``visit`` of this loop over this item completed, pinning the
+        frozen Output reference (``output_content_sha``) it produced. Idempotent:
+        re-checkpointing the same coordinate overwrites with the same ref."""
+        self._store.put_record(
+            "ledger_loop",
+            self._visit_key(loop_id, item_id, edge_id, visit),
+            {
+                "loop_id": loop_id,
+                "item_id": item_id,
+                "edge_id": edge_id,
+                "visit": visit,
+                "output_ref": output_ref,
+            },
+            org_id=self._org,
+        )
+
+    def completed_visits(self, loop_id: str, item_id: str, edge_id: str) -> set[int]:
+        """The visit indices already recorded for ``(loop_id, item_id, edge_id)`` in
+        this org. Resume loads these and skips them (re-charges $0)."""
+        return {
+            int(r["visit"])
+            for r in self._store.list_records("ledger_loop", org_id=self._org)
+            if r.get("loop_id") == loop_id
+            and r.get("item_id") == item_id
+            and r.get("edge_id") == edge_id
+            and "visit" in r
+        }
+
+    def iteration_output_ref(
+        self, loop_id: str, item_id: str, edge_id: str, visit: int
+    ) -> str | None:
+        """The frozen Output reference recorded for a specific completed visit."""
+        rec = self._store.get_record(
+            "ledger_loop", self._visit_key(loop_id, item_id, edge_id, visit), org_id=self._org
+        )
+        return None if rec is None else str(rec["output_ref"])
+
+    def checkpoint_depth(self, loop_id: str, item_id: str, depth: int, output_ref: str) -> None:
+        """The ``recurse`` variant: record completion at a given ``depth`` of the
+        per-item recursion stack, pinning the Output reference it produced."""
+        self._store.put_record(
+            "ledger_loop",
+            self._depth_key(loop_id, item_id, depth),
+            {
+                "loop_id": loop_id,
+                "item_id": item_id,
+                "depth": depth,
+                "output_ref": output_ref,
+            },
+            org_id=self._org,
+        )
+
+    def completed_depths(self, loop_id: str, item_id: str) -> set[int]:
+        """The recursion depths already recorded for ``(loop_id, item_id)`` in this org."""
+        return {
+            int(r["depth"])
+            for r in self._store.list_records("ledger_loop", org_id=self._org)
+            if r.get("loop_id") == loop_id and r.get("item_id") == item_id and "depth" in r
+        }
+
+    def depth_output_ref(self, loop_id: str, item_id: str, depth: int) -> str | None:
+        """The frozen Output reference recorded at a specific recursion ``depth``."""
+        rec = self._store.get_record(
+            "ledger_loop", self._depth_key(loop_id, item_id, depth), org_id=self._org
+        )
+        return None if rec is None else str(rec["output_ref"])
 
     # -- per-run state ------------------------------------------------------
     def record_run(self, run_id: str, *, backend: str, status: ExecState, version: str) -> None:

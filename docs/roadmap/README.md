@@ -98,6 +98,32 @@ Decisions recorded as ADR 0008 (observer surface as a Store facade) and ADR 0009
 (deploy via a detached session-leader daemon, not tmux). Dogfooded end to end in
 `demo/` (deploy → observe → visualize → manage) with an integration test.
 
+## Milestone F — Agent-language foundations (Linear project "The Agent Language", shipped)
+
+*Exit: the substrate primitives the agent-language operators (Refine, Program, Quorum,
+Escalate, the Tuner) stand on exist, are content-hashed, tenancy-scoped, and
+back-compatible. These are foundations — the headline operators themselves are M1+, not
+shipped here.*
+
+| # | Issue | Title | Status |
+|---|-------|-------|--------|
+| F-0 | CRA-193 | `Output` content hash (`output_content_sha`) — the canonical content identity | ✅ |
+| F-1 | CRA-194 | Canonical cassette key / `ExecutionCoordinate` + `org_id`/`decode_seed` fold | ✅ |
+| F-2 | CRA-195 | Loop/program ledger composite key space + deterministic `compute_loop_id` | ✅ |
+| F-3 | CRA-196 | The gate algebra — three gates (relative / paired / fail-closed precision) | ✅ |
+| F-4 | CRA-197 | `GoldenSet.from_corrections` + `correction` emission kind (provenance/taint gate) | ✅ |
+| F-5 | CRA-198 | Decode-knob ownership + `DeterminismTier` capability | ✅ |
+| F-6 | CRA-199 | Cost-model single owner + multiplicative composition law (`CostShape`) | ✅ |
+| F-7 | CRA-200 | Store-backed exclusive borrow / train-mode lifetime | ✅ |
+| F-8 | CRA-201 | `experiment-design.md` spec + `crawfish.experiment` statistical substrate | ✅ |
+
+These are foundations consumed by the still-to-ship operators and tuner: CL-1/CL-2 (Refine
+preflight, fail-closed verifier gate), C2/C3 (loop/program execution), AL-* (the Tuner,
+cost-regularized objective), and TS-* (decode/replay seams). Decisions recorded as
+ADR 0017 (decode-knob ownership), ADR 0018 (borrow lifetime semantics), and ADR 0019
+(content-hash version-bump + migration policy). The normative statistical-conformance gate
+is [`docs/architecture/experiment-design.md`](../architecture/experiment-design.md).
+
 ## Per-feature research notes
 
 Researcher findings (reviewed before implementation) live alongside this file as

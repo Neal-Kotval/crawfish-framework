@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 
 from pydantic import BaseModel, Field
 
@@ -19,6 +21,12 @@ from crawfish.core.context import RunContext
 from crawfish.core.ids import new_id
 from crawfish.core.types import JSONValue
 from crawfish.definition.types import Definition
+from crawfish.emission import (
+    CorrectionType,
+    Provenance,
+    read_corrections,
+)
+from crawfish.experiment import holm_correction, paired_bootstrap_ci
 from crawfish.metrics import Rubric, is_regression
 from crawfish.output import Output
 from crawfish.runtime.base import AgentRuntime
@@ -37,6 +45,12 @@ __all__ = [
     "gate_against_baseline",
     "upconvert_case",
     "migrate_golden_set",
+    # -- the gate algebra (F-3 / CRA-196) --
+    "VerifierNotGated",
+    "MetricVerdict",
+    "GateDecision",
+    "paired_gate",
+    "precision_gate",
 ]
 
 
@@ -84,6 +98,67 @@ class GoldenSet:
     @property
     def _kind(self) -> str:
         return f"golden:{self.name}@{self.version}"
+
+    @classmethod
+    def from_corrections(
+        cls,
+        store: Store,
+        name: str = "corrections",
+        *,
+        org_id: str = "local",
+        version: str = "0.1",
+        kinds: Sequence[CorrectionType | str] = (
+            CorrectionType.HUMAN_REVERT,
+            CorrectionType.CI_FAILURE,
+            CorrectionType.REVIEW_REJECT,
+        ),
+    ) -> GoldenSet:
+        """Build a :class:`GoldenSet` by mining ``correction`` emissions (F-4).
+
+        Sources the corrections corpus from the Store ledger (the records written by
+        :func:`crawfish.emission.emit_correction`) for ``org_id``, filtered to the
+        requested correction ``kinds`` (sub-categories
+        ``human_revert``/``ci_failure``/``review_reject``), and turns each into an
+        :class:`EvalCase` (inputs + the corrected ``expected`` output as the label).
+
+        **SECURITY — provenance/taint gate (Gap S4, corpus poisoning).** Corrections
+        feed guards/verifiers as ground truth, so this gate decides WHO may enter the
+        set. A correction is admitted **only if** ``provenance == TRUSTED`` **AND**
+        ``tainted is False``. Any correction that is ``UNTRUSTED`` (authored from
+        fluid/untrusted session data) **or** carries the fluid taint marker is
+        *quarantined*: it stays in the ledger for audit but never enters the
+        GoldenSet as trusted ground truth. This is why the gate is an AND of both
+        signals — a fluid-derived value cannot silently become a guard's ground truth
+        even if mislabelled ``TRUSTED``.
+
+        Org isolation: only ``org_id``'s correction records are read, and the built
+        GoldenSet is persisted (each admitted case written back) under the same
+        ``org_id``. Deterministic given a fixed ledger (no clock, no model call): the
+        same ledger always yields the same set of cases (case ids are the emission
+        ids). Returns the curated :class:`GoldenSet`.
+        """
+        gs = cls(store, name, org_id=org_id, version=version)
+        wanted = tuple(k if isinstance(k, CorrectionType) else CorrectionType(k) for k in kinds)
+        for em in read_corrections(store, org_id=org_id, kinds=wanted):
+            # -- provenance/taint gate (Security S4): admit trusted ground truth only.
+            provenance = em.attrs.get("provenance")
+            if provenance != Provenance.TRUSTED.value or em.tainted:
+                continue  # quarantine: untrusted or fluid-tainted correction
+            raw_inputs = em.attrs.get("inputs")
+            case = EvalCase(
+                id=em.id,
+                inputs=dict(raw_inputs) if isinstance(raw_inputs, dict) else {},
+                output=em.attrs.get("produced"),
+                label=em.attrs.get("expected"),
+                metadata={
+                    "source": "correction",
+                    "correction_type": em.attrs.get("correction_type"),
+                    "provenance": provenance,
+                    "run_id": em.run_id,
+                },
+            )
+            gs.add(case)
+        return gs
 
     def add(self, case: EvalCase) -> None:
         self._store.put_record(self._kind, case.id, case.model_dump(mode="json"), org_id=self._org)
@@ -251,3 +326,233 @@ def gate_against_baseline(
     if baseline is None:
         return True  # no baseline yet — nothing to regress against
     return not is_regression(baseline, candidate, tolerance=tolerance)
+
+
+# ===========================================================================
+# The gate algebra (F-3 / CRA-196)
+# ---------------------------------------------------------------------------
+# ONE owner reconciling the three gate notions. Each consumer picks one gate:
+#
+#   (a) relative-regression  — ``gate_against_baseline`` / ``is_regression``
+#       (above; unchanged). A candidate passes iff no metric drops below
+#       ``-tolerance``. This is the cheap, aggregate-score gate used by callers
+#       that retain only mean scores and want today's zero-tolerance behaviour.
+#       ``metrics.is_regression_variance_aware`` is its variance-aware sibling
+#       for callers that retain a recorded per-metric ``std`` but not per-case
+#       deltas; at ``std=0`` it reduces to (a) byte-for-byte.
+#
+#   (b) variance-aware paired test — ``paired_gate`` (below). The Tuner /
+#       ``calibrate`` / promotion gate uses this: baseline and candidate are
+#       scored on the SAME GoldenSet cases, so we analyse per-case deltas with a
+#       paired bootstrap CI (``experiment.paired_bootstrap_ci``) and a family-
+#       wise Holm correction (``experiment.holm_correction``) OR a primary +
+#       pre-registered non-inferiority guardrail design. Adopt iff the primary's
+#       CI is strictly above 0 and no guardrail breaches its margin.
+#
+#   (c) absolute-precision — ``precision_gate`` (below). Verifiers / guards
+#       (``VerifierStop`` / consequential sinks) use this. It is NOT relative:
+#       it measures decision precision ``TP / (TP + FP)`` against a labelled
+#       decision GoldenSet and FAILS CLOSED — a never-benchmarked verifier (no
+#       baseline) is REJECTED by raising ``VerifierNotGated`` (the CL-2 safety
+#       inversion: admit only after measuring, never by default).
+#
+# All three consume the shared substrate ``crawfish.experiment`` (F-8); no stats
+# are re-implemented here. See ``docs/architecture/experiment-design.md``.
+# ===========================================================================
+
+
+class VerifierNotGated(Exception):
+    """A consequential verifier/guard was used without an absolute-precision gate.
+
+    Raised by :func:`precision_gate` when the verifier has **no baseline** (never
+    benchmarked) — the gate **fails closed**: an un-measured verifier is rejected,
+    never admitted by default. This is the CL-2 safety inversion fix.
+    """
+
+
+@dataclass(frozen=True)
+class MetricVerdict:
+    """The paired-gate result for a single metric: its CI and adopt/guardrail status."""
+
+    name: str
+    lo: float
+    hi: float
+    mean: float
+    is_primary: bool
+    passed: bool
+
+
+@dataclass(frozen=True)
+class GateDecision:
+    """The outcome of :func:`paired_gate` — promote-or-not plus per-metric detail."""
+
+    promoted: bool
+    primary: str
+    verdicts: tuple[MetricVerdict, ...] = field(default_factory=tuple)
+    reason: str = ""
+
+
+def _per_case_deltas(
+    baseline_scores: Mapping[str, Sequence[float]],
+    candidate_scores: Mapping[str, Sequence[float]],
+    metric: str,
+) -> list[float]:
+    """Per-case deltas ``candidate_i - baseline_i`` for ``metric`` (paired design)."""
+    base = baseline_scores.get(metric)
+    cand = candidate_scores.get(metric)
+    if base is None or cand is None:
+        raise KeyError(f"metric {metric!r} missing from baseline or candidate scores")
+    if len(base) != len(cand):
+        raise ValueError(
+            f"paired gate requires equal-length per-case scores for {metric!r}: "
+            f"baseline has {len(base)}, candidate has {len(cand)}"
+        )
+    return [float(c) - float(b) for b, c in zip(base, cand, strict=True)]
+
+
+def _ci_pvalue(lo: float, hi: float, mean: float) -> float:
+    """A conservative bootstrap p-value proxy for "mean delta <= 0".
+
+    Maps the one-sided bootstrap CI to a p-value for Holm: a CI strictly above 0
+    is significant (small p), a CI straddling/below 0 is not. We use the standard
+    "smallest two-sided level at which the CI excludes 0" reading: if the
+    ``1-alpha`` CI (here built at the gate's own ``alpha``) has ``lo > 0`` the
+    effect clears that ``alpha``; otherwise it does not. We return ``0.0`` when
+    ``lo > 0`` (clears any threshold at this resolution) and ``1.0`` otherwise,
+    deferring the family-wise control entirely to Holm over these decisions.
+    """
+    return 0.0 if lo > 0.0 else 1.0
+
+
+def paired_gate(
+    baseline_scores: Mapping[str, Sequence[float]],
+    candidate_scores: Mapping[str, Sequence[float]],
+    *,
+    primary: str,
+    alpha: float = 0.05,
+    guardrails: Mapping[str, float] | None = None,
+    n_resamples: int = 2000,
+    seed: int = 0,
+) -> GateDecision:
+    """Variance-aware paired promotion gate (gate **b**) — F-3 / F-8 conformant.
+
+    ``baseline_scores[m]`` / ``candidate_scores[m]`` are the **per-case** score
+    vectors for metric ``m`` over the *same* GoldenSet cases (case ``i`` is the
+    ``i``-th element of both). The gate analyses per-case deltas with a paired
+    percentile bootstrap (:func:`crawfish.experiment.paired_bootstrap_ci`).
+
+    Two designs (experiment-design.md §2), selected by ``guardrails``:
+
+    * **Primary + guardrails** (``guardrails`` given): adopt iff ``primary``'s CI
+      is strictly above 0 (``lo > 0``) **and** every guardrail metric's mean
+      per-case delta does not drop below ``-margin`` (non-inferiority). Only the
+      primary is an improvement target.
+    * **Family-wise Holm** (``guardrails is None``): test every metric jointly,
+      apply Holm (:func:`crawfish.experiment.holm_correction`) across them so the
+      family-wise error stays at ``alpha``; promote iff the corrected decision for
+      ``primary`` is "reject the null" (a real improvement).
+
+    A candidate within the paired noise band (CI straddles 0) is rejected; a
+    clearly-better candidate (CI strictly above 0) is promoted. Deterministic: the
+    bootstrap is seeded.
+    """
+    if primary not in candidate_scores or primary not in baseline_scores:
+        raise KeyError(f"primary metric {primary!r} missing from scores")
+
+    if guardrails is not None:
+        # Design 1: one primary improvement target + non-inferiority guardrails.
+        deltas = _per_case_deltas(baseline_scores, candidate_scores, primary)
+        lo, hi, mean = paired_bootstrap_ci(deltas, alpha, n_resamples, seed)
+        primary_ok = lo > 0.0
+        verdicts = [MetricVerdict(primary, lo, hi, mean, True, primary_ok)]
+        breached: list[str] = []
+        for name, margin in guardrails.items():
+            g_deltas = _per_case_deltas(baseline_scores, candidate_scores, name)
+            g_lo, g_hi, g_mean = paired_bootstrap_ci(g_deltas, alpha, n_resamples, seed)
+            # Non-inferiority: the *lower* CI bound must clear the margin.
+            ok = g_lo >= -abs(margin)
+            if not ok:
+                breached.append(name)
+            verdicts.append(MetricVerdict(name, g_lo, g_hi, g_mean, False, ok))
+        promoted = primary_ok and not breached
+        if not primary_ok:
+            reason = f"primary {primary!r} CI straddles/below 0 (lo={lo:.4g})"
+        elif breached:
+            reason = f"guardrail(s) breached: {', '.join(sorted(breached))}"
+        else:
+            reason = f"primary {primary!r} CI strictly above 0 (lo={lo:.4g})"
+        return GateDecision(promoted, primary, tuple(verdicts), reason)
+
+    # Design 2: family-wise Holm correction across the whole rubric.
+    names = sorted(set(baseline_scores) & set(candidate_scores))
+    if primary not in names:
+        raise KeyError(f"primary metric {primary!r} not in shared metric set")
+    cis: dict[str, tuple[float, float, float]] = {}
+    pvalues: list[float] = []
+    for name in names:
+        deltas = _per_case_deltas(baseline_scores, candidate_scores, name)
+        lo, hi, mean = paired_bootstrap_ci(deltas, alpha, n_resamples, seed)
+        cis[name] = (lo, hi, mean)
+        pvalues.append(_ci_pvalue(lo, hi, mean))
+    rejects = holm_correction(pvalues, alpha)
+    decisions = dict(zip(names, rejects, strict=True))
+    verdicts = [MetricVerdict(name, *cis[name], name == primary, decisions[name]) for name in names]
+    promoted = decisions[primary]
+    reason = (
+        f"primary {primary!r} significant after Holm (m={len(names)})"
+        if promoted
+        else f"primary {primary!r} not significant after Holm (m={len(names)})"
+    )
+    return GateDecision(promoted, primary, tuple(verdicts), reason)
+
+
+def precision_gate(
+    decisions: Sequence[bool],
+    labels: Sequence[bool],
+    *,
+    min_precision: float,
+    baseline_exists: bool,
+) -> float:
+    """Absolute-precision gate (gate **c**) for verifiers/guards — FAILS CLOSED.
+
+    A verifier emits a positive ``decision`` (e.g. "stop / admit / this is correct")
+    per labelled case; ``labels[i]`` is the ground-truth positive. Precision is
+    ``TP / (TP + FP)`` against the decision GoldenSet. The candidate is admitted
+    iff ``precision >= min_precision`` **and** a baseline exists.
+
+    **Fails closed (CL-2 safety inversion).** A never-benchmarked verifier
+    (``baseline_exists is False``) is *rejected by construction*: this raises
+    :class:`VerifierNotGated` rather than returning. An un-measured verifier is
+    never admitted by default — admission requires having measured it. Likewise a
+    verifier whose measured precision is below ``min_precision`` raises.
+
+    Returns the measured precision on success (so the caller can record it). Note
+    this is an **absolute** decision-quality gate, unlike the relative gates (a)/(b).
+    """
+    if not baseline_exists:
+        raise VerifierNotGated(
+            "verifier has no baseline — never benchmarked; the precision gate "
+            "fails closed (admit only after measuring against the decision GoldenSet)"
+        )
+    if len(decisions) != len(labels):
+        raise ValueError(
+            f"precision_gate needs aligned decisions/labels: "
+            f"{len(decisions)} decisions vs {len(labels)} labels"
+        )
+    if not 0.0 <= min_precision <= 1.0:
+        raise ValueError(f"min_precision must be in [0, 1], got {min_precision!r}")
+    tp = sum(1 for d, y in zip(decisions, labels, strict=True) if d and y)
+    fp = sum(1 for d, y in zip(decisions, labels, strict=True) if d and not y)
+    predicted_positive = tp + fp
+    if predicted_positive == 0:
+        # No positive predictions ⇒ precision undefined ⇒ fail closed.
+        raise VerifierNotGated(
+            "verifier made no positive decisions on the GoldenSet — precision is "
+            "undefined; the gate fails closed"
+        )
+    precision = tp / predicted_positive
+    if precision < min_precision:
+        raise VerifierNotGated(
+            f"verifier precision {precision:.4g} below required {min_precision:.4g} — rejected"
+        )
+    return precision

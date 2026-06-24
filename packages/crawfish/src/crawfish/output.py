@@ -9,6 +9,8 @@ satisfies the downstream node's required inputs (structural check).
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Generic
 
 from pydantic import BaseModel, Field
@@ -18,7 +20,13 @@ from crawfish.core.ids import new_id
 from crawfish.core.types import JSONValue, Parameter, T
 from crawfish.typesystem.registry import TypeRegistry
 
-__all__ = ["Output", "output_satisfies_inputs", "check_wire", "WireError"]
+__all__ = [
+    "Output",
+    "output_satisfies_inputs",
+    "check_wire",
+    "WireError",
+    "output_content_sha",
+]
 
 
 class WireError(TypeError):
@@ -107,3 +115,27 @@ def check_wire(
         names = {p.name for p in output.output_schema}
         wanted = {p.name: p.type for p in inputs}
         raise WireError(f"output (schema fields {sorted(names)}) cannot satisfy inputs {wanted}")
+
+
+# Fields that define an Output's *content* identity. The volatile per-instance
+# ``id`` is excluded so that two structurally-equal Outputs (same value/schema/
+# producer/lineage/taint) hash equal even though each carries a fresh UUID. Bump
+# ``_CONTENT_SHA_VERSION`` if this field set ever changes (it changes the digest).
+_CONTENT_SHA_FIELDS = ("output_schema", "value", "produced_by", "lineage", "tainted")
+_CONTENT_SHA_VERSION = 1
+
+
+def output_content_sha(o: Output[object]) -> str:
+    """Return a stable hex SHA-256 digest of an ``Output``'s content.
+
+    Pure function over a frozen value: no mutation, no model call, no I/O. The
+    digest is computed over canonical JSON (``sort_keys=True`` with tight
+    separators) of the content-defining fields only — the volatile ``id`` is
+    excluded. Consequently two structurally-equal Outputs hash equal even when
+    their ``id`` differs, and the digest is identical across processes and runs.
+    """
+    dumped = o.model_dump(mode="json")
+    content = {field: dumped[field] for field in _CONTENT_SHA_FIELDS}
+    payload = {"v": _CONTENT_SHA_VERSION, "content": content}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

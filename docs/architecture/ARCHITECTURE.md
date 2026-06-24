@@ -134,6 +134,125 @@ record analogue of CRA-171's `Emission.from_event`. A migration fixes the table;
 up-converter fixes a row, without a bulk rewrite. (Emission retention/rotation and
 `max_per_run` are a separate concern, deliberately out of scope here.)
 
+## Agent-language foundations (Milestone F)
+
+Milestone F lays the *substrate primitives* the agent-language operators (Refine, Program,
+Quorum, Escalate, the Tuner) build on. The operators themselves are not shipped; what
+shipped are the contracts below. All identity additions are forward-compatible and
+*fold-only-when-non-default* — see [ADR 0019](decisions/0019-content-hash-version-bump-and-migration.md).
+
+### Output content hash — the canonical content identity
+
+- **`crawfish.output.output_content_sha(o) -> str`** is the single content-hash primitive:
+  a lowercase hex SHA-256 over the **canonical JSON** of the structural-equality fields
+  (`output_schema`, `value`, `produced_by`, `lineage`, `tainted`). The per-instance `id`
+  is **excluded** — it is a fresh UUID, so including it would make every Output hash
+  unique; excluding it makes two structurally-equal Outputs hash equal regardless of `id`.
+  The `Output` model is unchanged (still frozen, no `sha` field). A `_CONTENT_SHA_VERSION`
+  is folded into the payload; bumping it re-keys any ledger persisted on the sha. Every
+  consumer that needs "an Output's content identity" (ledger `output_ref`, no-progress-by-sha)
+  reads this one function.
+
+### Replay cassette key = the execution coordinate (F-1)
+
+- `runtime/replay.py`'s `_key(request, *, org_id="local", coordinate=None)` is the
+  versioned **execution-coordinate / run-identity contract**. Beyond the legacy core
+  (`id`, `version`, `role`, `model`, `inputs`, `session_id`) it folds three components
+  **only when non-default**: an `ExecutionCoordinate` (frozen dataclass with
+  `sample_index` / `iter_index` / `visit_count` / `depth` axes, each `Optional[int]`),
+  `org_id` (when `!= "local"`), and `decode_seed`. An all-`None` coordinate folds nothing.
+- **Back-compat is pinned:** with no coordinate, `org_id == "local"`, and no decode field,
+  `_key` reproduces the exact pre-F-1 key (legacy cassettes still resolve). Every operator
+  that re-runs a leaf (quorum, Refine, MCTS, recurse) **must stamp its coordinate axis** so
+  each re-run gets a distinct cassette instead of colliding into one.
+
+### Loop / program ledger — a composite key space (F-2)
+
+- The linear pipeline ledger (`checkpoint_step` / `completed_steps`) is unchanged. F-2 adds
+  an **explicit extended key space** alongside it under a new `ledger_loop` record kind (no
+  new table): loop/back-edge visits keyed `(loop_id, item_id, edge_id, visit) -> output_ref`,
+  and a recurse-depth variant `(loop_id, item_id, depth) -> output_ref`. Each iteration pins
+  the F-0 `output_content_sha` of its frozen `Output` as the `output_ref`.
+- `compute_loop_id(body_version_sha, item_lineage, edge_id)` is **deterministic** — a
+  length-prefixed, version-tagged (`_LOOP_ID_VERSION`) SHA, **never** `new_id()` — so two
+  process invocations of the same loop over the same item re-derive the same id and resume
+  re-charges \$0 for already-recorded iterations. Migration 3 adds an `(org_id, kind)` index
+  to keep the completed-iteration scans sargable; the pipeline ledger is untouched
+  (see [ADR 0019](decisions/0019-content-hash-version-bump-and-migration.md)).
+
+### AgentRuntime determinism tier + decode-knob ownership (F-5)
+
+- The `AgentRuntime` contract advertises a **determinism capability tier**:
+  `DeterminismTier((str, Enum))` = `HONORS_SEED` / `BEST_EFFORT` / `NONE`, with
+  `AgentRuntime.determinism_tier` defaulting to `BEST_EFFORT`. This separates model
+  stochasticity from infra-nondeterminism: `cw.calibrate` attributes a `BEST_EFFORT`/`NONE`
+  backend's residual variance to infra (a variance floor), not to the Definition.
+- **Decode-knob ownership** (ADR 0017): the tunable knobs `temperature` / `top_p` /
+  `sample_k` live in exactly one place — the `AgentSpec` on the Definition — and enter its
+  content hash. `RunRequest.temperature` is a read-only **derived** property, never a
+  settable field. Per-call knobs live on `RunRequest`: `grammar` (constrained decode, **not**
+  hashed — provider dialect, degrades gracefully) and `decode_seed` (**not** hashed; folded
+  into the F-1 cassette key instead). So every decode field enters run identity exactly once.
+
+### Cost model — single owner, one composition law (F-6)
+
+- **`cost.py` is the single owner of the cost model.** No other module re-implements
+  estimation or re-defines an operator's cost multiplier. `CostEstimate` gains **additive**
+  `expected_usd` / `worst_case_usd` / `expected_lo_usd` / `expected_hi_usd`; the scalar
+  `total_usd` is **unchanged** — it stays the lower bound (every cost-bearing operator fires
+  once). A bare estimate is the degenerate interval `[total, total, total]`, so existing
+  call sites and tests are untouched.
+- A `CostShape` describes one cost-bearing operator wrapper and its re-run multiplier;
+  `compose_cost(base, shapes)` folds a nesting of shapes (outermost-first) onto a base.
+  **The composition law is multiplicative along operator nesting:**
+  `worst_case_usd = total_usd × Π shape.worst_case_factor()`. Per-operator worst-case
+  factors: `Refine` → `max_iters`, `Escalate` → `1 + strong_price/base_price` (re-priced on
+  the strong model), `Quorum` → `k`, `Retry` → `n`, `recurse` → `branching ** max_depth`.
+  Worked example: `Refine(4) ∘ Escalate(2×) ∘ Quorum(5)` previews `40×` the lower bound.
+- The **expected band** is CI-aware and never falsely precise:
+  `expected_factor = 1 + p·(worst_case_factor − 1)` where `p` is the operator's measured
+  escalation/retry rate (from `cw.calibrate`/ledger), with `rate_ci` widening the
+  `expected_lo`/`expected_hi` edges. With **no** measured rate, `expected == worst_case`
+  (never undercount); a model validator enforces
+  `total ≤ expected_lo ≤ expected ≤ expected_hi ≤ worst_case`. CL-3 and ALG-5 are
+  *consumers* of this API, not editors.
+
+### The gate algebra + statistical substrate (F-3 / F-8)
+
+- **`crawfish.experiment`** is the shared, pure, stdlib-only statistical substrate
+  (`paired_bootstrap_ci`, `holm_correction`, `k_from_alpha`, `tune_gate_split`,
+  `winners_curse_shrink`, power helpers, `anytime_valid_bound`). No numpy/scipy; bootstraps
+  are seeded via a local `random.Random` so identical inputs+seed are byte-for-byte
+  reproducible. The normative spec
+  [`experiment-design.md`](experiment-design.md) is the **conformance gate** every
+  statistical consumer (`calibrate` / `gate` / `quorum` / `explore` / `guard`) must cite.
+- **The gate algebra** (`eval.py` / `metrics.py`, single owner) reconciles three gate
+  notions and names which consumer uses which — none re-implement stats, all consume
+  `crawfish.experiment`:
+
+  | Gate | Function | Consumer |
+  |------|----------|----------|
+  | relative-regression | `metrics.is_regression` / `eval.gate_against_baseline` (unchanged) | cheap mean-only callers |
+  | variance-aware aggregate | `metrics.is_regression_variance_aware` (new; `std=0,k=0` reduces to the above byte-for-byte) | callers retaining a per-metric `std` |
+  | variance-aware **paired** | `eval.paired_gate` (new) | the Tuner / `calibrate` / promotion gate |
+  | absolute-precision | `eval.precision_gate` (new; **fails closed**) | verifiers / guards / consequential sinks |
+
+  `paired_gate` analyses per-case deltas over identical GoldenSet cases via
+  `paired_bootstrap_ci` (CI strictly above 0 ⇒ promote; straddling 0 ⇒ reject), with Holm
+  family-wise correction or a primary+guardrails design. `precision_gate` is **absolute**
+  and **fails closed** — no baseline ⇒ reject (see [SECURITY.md](SECURITY.md)).
+
+### Store-backed exclusive borrow / train mode (F-7)
+
+- `crawfish/borrow.py` provides a **dynamic exclusive borrow** for switching a `Definition`
+  into train/mutate mode, enforced by a Store-backed atomic claim (reusing
+  `claim_idempotency`) — never an in-process registry. `mutable(target, store, *, org_id=...)`
+  is a context manager that acquires on enter and releases on exit (idempotent, even on
+  exception); an **epoch** in a `borrow_lock` record makes the single-shot claim
+  re-acquirable. The borrow lifetime is exactly the `with` block and concurrency is rejected
+  at acquire. Because enforcement lives in the Store, the guarantee holds across processes and
+  survives the SQLite→Postgres swap. See [ADR 0018](decisions/0018-borrow-lifetime-semantics.md).
+
 ## Packaging
 
 - `packages/crawfish` — the OSS framework (the `pip install crawfish` distribution).
@@ -161,5 +280,6 @@ up-converter fixes a row, without a bulk rewrite. (Emission retention/rotation a
 
 - [Security](SECURITY.md) — the prompt-injection boundary, secrets, and taint
 - [Emission taxonomy](emission-taxonomy.md) — the frozen observability contract
+- [Experiment design](experiment-design.md) — the statistical-conformance gate for the eval plane
 - [API stability](API-STABILITY.md) — semver and deprecation policy
 - [ADRs](decisions) — the decisions behind these seams

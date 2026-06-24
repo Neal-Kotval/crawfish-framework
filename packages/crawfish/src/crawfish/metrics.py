@@ -23,6 +23,7 @@ from crawfish.batch import Task
 from crawfish.core.context import RunContext
 from crawfish.core.types import JSONValue, Parameter
 from crawfish.definition.types import Definition
+from crawfish.experiment import k_from_alpha
 from crawfish.output import Output
 from crawfish.run import Run
 from crawfish.runtime.base import AgentRuntime
@@ -52,6 +53,8 @@ __all__ = [
     "structural_match",
     "compare",
     "is_regression",
+    "noise_band",
+    "is_regression_variance_aware",
 ]
 
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
@@ -542,5 +545,45 @@ def is_regression(
     """
     for delta in compare(baseline, candidate).values():
         if delta < -tolerance:
+            return True
+    return False
+
+
+def noise_band(std: dict[str, float], *, alpha: float = 0.05) -> dict[str, float]:
+    """Per-metric noise-band half-width ``k * std`` from a stated significance ``alpha``.
+
+    ``k`` is **derived** from ``alpha`` via :func:`crawfish.experiment.k_from_alpha`
+    (the two-sided standard-normal quantile), never a free constant (F-3 / F-8).
+    A metric with recorded ``std == 0`` (or absent) contributes a zero-width band,
+    so at ``std=0`` the band vanishes and the gate collapses to ``is_regression``.
+    """
+    k = k_from_alpha(alpha)
+    return {name: k * max(0.0, s) for name, s in std.items()}
+
+
+def is_regression_variance_aware(
+    baseline: dict[str, float],
+    candidate: dict[str, float],
+    *,
+    std: dict[str, float] | None = None,
+    alpha: float = 0.05,
+    tolerance: float = 0.0,
+) -> bool:
+    """Variance-aware regression check: gate (b) reduced to recorded per-metric std.
+
+    Identical to :func:`is_regression` except the per-metric noise tolerance is
+    widened by that metric's ``k * std`` band (``k`` from ``alpha`` via
+    :func:`crawfish.experiment.k_from_alpha`). A metric regresses only when its
+    delta drops below ``-(tolerance + k * std_metric)`` — i.e. past the noise band.
+
+    **Back-compat (F-3 hard requirement).** When every metric's ``std`` is ``0``
+    (or ``std is None``) the band is zero-width, so this reduces **byte-for-byte**
+    to ``is_regression(baseline, candidate, tolerance=tolerance)``. This is the
+    arithmetic-only sibling of :func:`paired_gate` for callers that only retain
+    aggregate scores + a recorded std (no per-case deltas).
+    """
+    band = noise_band(std or {}, alpha=alpha)
+    for name, delta in compare(baseline, candidate).items():
+        if delta < -(tolerance + band.get(name, 0.0)):
             return True
     return False

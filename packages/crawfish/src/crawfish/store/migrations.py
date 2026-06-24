@@ -133,9 +133,31 @@ def _migrate_event_index(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_org_run ON events(org_id, run_id)")
 
 
+def _migrate_loop_ledger_index(conn: sqlite3.Connection) -> None:
+    """v3: index ``records(org_id, kind)`` to speed the loop-ledger scan path (F-2).
+
+    The loop/iteration ledger (CRA-195) introduces the ``ledger_loop`` record *kind*:
+    composite-key rows ``(loop_id, item_id, edge_id, visit) -> output_ref`` plus a
+    ``(loop_id, item_id, depth)`` variant for ``recurse``. ``completed_visits`` /
+    ``completed_depths`` resolve completed iterations by scanning ``list_records`` for
+    that kind within an ``org_id`` (resume must re-charge $0 for done iterations), so an
+    index on the leading ``(org_id, kind)`` pair keeps that scan sargable as the loop
+    ledger grows. The rows live in the generic ``records`` table (no new table needed —
+    the namespace is a new *kind*, ``ledger_loop``), so this migration is purely the
+    supporting index. Additive and idempotent; the existing ``ledger_pipeline`` /
+    ``ledger_item`` / ``ledger_run`` kinds are untouched and keep working.
+    """
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_records_org_kind ON records(org_id, kind)")
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "baseline schema (records, kv, idempotency, events)", _migrate_baseline),
     Migration(2, "index events(org_id, run_id) for ledger reads", _migrate_event_index),
+    Migration(
+        3,
+        "index records(org_id, kind) for the loop ledger (F-2)",
+        _migrate_loop_ledger_index,
+    ),
 ]
 
 #: The schema version this binary writes. Equals the highest migration version.

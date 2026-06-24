@@ -39,8 +39,13 @@ __all__ = [
     "EmissionKind",
     "REQUIRED_ATTRS",
     "Emission",
+    "CorrectionType",
+    "Provenance",
+    "CORRECTION_RECORD_KIND",
     "emit",
     "read_emissions",
+    "emit_correction",
+    "read_corrections",
 ]
 
 # Bump when the Emission envelope or any kind's required-attrs change. The Store
@@ -63,6 +68,50 @@ class EmissionKind(str, Enum):
     METRIC = "metric"  # a measured Metric/Rubric value
     SECRET_LEASE = "secret_lease"  # the broker leased a secret to a node (#8)
     JAIL_VIOLATION = "jail_violation"  # the sandbox blocked an escape attempt (#9)
+    CORRECTION = "correction"  # a ground-truth correction signal (F-4): feeds GoldenSets/guards
+
+
+class CorrectionType(str, Enum):
+    """The sub-category carried on a ``CORRECTION`` emission/record (F-4).
+
+    These are the three correction *types* sourced by
+    :meth:`crawfish.eval.GoldenSet.from_corrections` — each names *how* a wrong
+    output was discovered, so a GoldenSet can be filtered to one signal source.
+    """
+
+    HUMAN_REVERT = "human_revert"  # a human reverted/undid an agent's output
+    CI_FAILURE = "ci_failure"  # a CI/test gate failed on an agent's output
+    REVIEW_REJECT = "review_reject"  # a reviewer rejected the output
+
+
+class Provenance(str, Enum):
+    """Who authored a ``CORRECTION`` — the trust class of its source (Security S4).
+
+    Corrections feed guards/verifiers as ground truth, so a poisoned correction
+    corpus is an attack surface (corpus poisoning). Provenance is the explicit
+    control on WHO may emit a correction that enters a GoldenSet:
+
+    * :attr:`TRUSTED` — authored by a trusted operator/CI/reviewer (static config,
+      not session data). Admitted to a GoldenSet as ground truth.
+    * :attr:`UNTRUSTED` — derived from fluid/untrusted session data. Quarantined:
+      recorded for audit but **never** admitted as trusted ground truth.
+
+    The taint gate (see :meth:`crawfish.eval.GoldenSet.from_corrections`) requires
+    BOTH ``provenance == TRUSTED`` AND ``tainted is False``: a correction carrying
+    a fluid-derived value is quarantined even if labelled trusted, so tainted input
+    can never silently become a guard's ground truth.
+    """
+
+    TRUSTED = "trusted"
+    UNTRUSTED = "untrusted"
+
+
+# The Store record namespace for corrections. A correction is written BOTH as a
+# ledger emission (the queryable taxonomy half) AND as a generic Store record under
+# this kind, so the corpus is listable/filterable across runs and org-isolated via
+# the existing record API (the F-2 pattern: no Store-file edits). The record id is
+# the emission id; every row carries org_id.
+CORRECTION_RECORD_KIND = "correction"
 
 
 # Required attribute keys per kind. The values carried in ``Emission.attrs`` must
@@ -81,6 +130,9 @@ REQUIRED_ATTRS: Mapping[EmissionKind, tuple[str, ...]] = MappingProxyType(
         EmissionKind.METRIC: ("metric", "value"),
         EmissionKind.SECRET_LEASE: ("ref", "node_id"),
         EmissionKind.JAIL_VIOLATION: ("attempt", "severity"),
+        # provenance is the WHO-may-emit control (Security S4); correction_type is
+        # the human_revert/ci_failure/review_reject sub-category.
+        EmissionKind.CORRECTION: ("correction_type", "provenance"),
     }
 )
 
@@ -367,3 +419,96 @@ def read_emissions(store: Store, run_id: str, *, org_id: str = "local") -> list[
     """
     rows = store.events(run_id, org_id=org_id)
     return [Emission.from_event(row) for row in rows]
+
+
+# -- corrections (F-4) --------------------------------------------------------
+def emit_correction(
+    store: Store,
+    *,
+    run_id: str,
+    correction_type: CorrectionType,
+    provenance: Provenance,
+    org_id: str = "local",
+    tainted: bool = False,
+    inputs: dict[str, JSONValue] | None = None,
+    expected: JSONValue = None,
+    produced: JSONValue = None,
+    node_id: str | None = None,
+    pipeline: str | None = None,
+    ts: float = 0.0,
+    attrs: dict[str, JSONValue] | None = None,
+) -> Emission:
+    """Record a ground-truth ``correction`` (F-4) onto the ledger AND the corpus.
+
+    A correction names a wrong agent output discovered by a trusted source
+    (``correction_type`` = how it was found). It is written twice:
+
+    * as a typed :class:`Emission` of kind ``CORRECTION`` on the run's ledger (the
+      taxonomy half — queryable per run, taint-propagating);
+    * as a generic Store record under :data:`CORRECTION_RECORD_KIND` keyed by the
+      emission id (the corpus half — listable/filterable across runs, org-isolated)
+      via the existing record API (no Store-file edits; the F-2 pattern).
+
+    SECURITY (Gap S4 — corpus poisoning): ``provenance`` declares WHO authored the
+    correction. ``tainted`` propagates the fluid/untrusted marker. Neither is
+    enforced here (every attempt is *recorded* for audit); the trust gate lives in
+    :meth:`crawfish.eval.GoldenSet.from_corrections`, which admits only
+    ``provenance == TRUSTED`` AND ``tainted is False`` corrections as ground truth
+    and quarantines the rest. A correction derived from fluid input therefore can
+    never silently become a guard's ground truth.
+
+    Determinism: ``ts`` is whatever the caller stamps (default ``0.0``); no clock.
+    """
+    payload: dict[str, JSONValue] = {
+        "correction_type": correction_type.value,
+        "provenance": provenance.value,
+    }
+    if inputs is not None:
+        payload["inputs"] = inputs
+    if expected is not None:
+        payload["expected"] = expected
+    if produced is not None:
+        payload["produced"] = produced
+    if attrs:
+        payload.update(attrs)
+
+    em = Emission(
+        kind=EmissionKind.CORRECTION,
+        run_id=run_id,
+        org_id=org_id,
+        pipeline=pipeline,
+        node_id=node_id,
+        ts=ts,
+        attrs=payload,
+        tainted=tainted,
+    )
+    # Ledger half (per-run, taint-propagating). ScrubbingStore, if wrapping, redacts.
+    store.append_event(run_id, em.to_event(), org_id=org_id)
+    # Corpus half (cross-run, org-isolated, kind-filterable).
+    store.put_record(CORRECTION_RECORD_KIND, em.id, em.to_event(), org_id=org_id)
+    return em
+
+
+def read_corrections(
+    store: Store,
+    *,
+    org_id: str = "local",
+    kinds: tuple[CorrectionType, ...] | None = None,
+) -> list[Emission]:
+    """List every recorded ``correction`` for ``org_id`` (cross-run), as Emissions.
+
+    Reads the corpus half (the :data:`CORRECTION_RECORD_KIND` records), so this is a
+    cross-run query — unlike :func:`read_emissions`, which is per-run. ``kinds``
+    filters to specific :class:`CorrectionType` sub-categories. Org isolation holds:
+    only this ``org_id``'s correction records are returned. Pure read — no clock.
+    """
+    wanted = {k.value for k in kinds} if kinds is not None else None
+    out: list[Emission] = []
+    for row in store.list_records(CORRECTION_RECORD_KIND, org_id=org_id):
+        em = Emission.from_event(row)
+        if em.kind is not EmissionKind.CORRECTION:
+            continue
+        if wanted is not None and em.attrs.get("correction_type") not in wanted:
+            continue
+        out.append(em)
+    return out
