@@ -28,6 +28,14 @@ from crawfish.output import Output
 __all__ = [
     "extract_confidence",
     "abstention_threshold",
+    # Re-exported from crawfish.abstain (TS-4): abstention is the decline-rather-than-act
+    # sibling of this module's confidence vocabulary. The implementation lives in
+    # crawfish.abstain (which imports extract_confidence from here); we re-export at the
+    # bottom of the file so the two read as one surface without a circular import.
+    "abstain_below",
+    "abstain_below_calibrated",
+    "is_abstention",
+    "Abstention",
 ]
 
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
@@ -127,3 +135,16 @@ def abstention_threshold(
         else:
             break
     return threshold
+
+
+# -- abstention (TS-4) ------------------------------------------------------
+# Re-export the typed-abstention surface here so this module is the single home of the
+# confidence vocabulary (measure → calibrate → escalate-or-abstain). The import is at the
+# bottom, after extract_confidence is defined, so crawfish.abstain (which imports
+# extract_confidence from this module) does not form a circular import.
+from crawfish.abstain import (  # noqa: E402
+    Abstention,
+    abstain_below,
+    abstain_below_calibrated,
+    is_abstention,
+)

@@ -9,6 +9,13 @@ are added here, each placed in its stability tier.
 
 from __future__ import annotations
 
+from crawfish.abstain import (
+    ABSTENTION_MARKER,
+    Abstention,
+    abstain_below,
+    abstain_below_calibrated,
+    is_abstention,
+)
 from crawfish.anomaly import (
     AnomalyEngine,
     AnomalyRule,
@@ -126,6 +133,24 @@ from crawfish.executor import (
     DependencyGraph,
     ExecutionPlan,
     Roadmap,
+)
+from crawfish.grammar import Grammar, GrammarError, GrammarKind
+from crawfish.grammar import parse as parse_grammar
+from crawfish.guard import (
+    Always,
+    BoolCombination,
+    Comparison,
+    GuardCertificate,
+    GuardGrammarError,
+    GuardNotEarned,
+    GuardStage,
+    HouseGuard,
+    Interval,
+    NumericBound,
+    Predicate,
+    PredicateMetric,
+    SetMembership,
+    wilson_lower_bound,
 )
 from crawfish.inspector import RunReport, format_report, inspect_run, tail_events
 from crawfish.jail import (
@@ -281,6 +306,17 @@ from crawfish.runtime import (
     expand_candidates,
     get_runtime,
     resolve_carry_strategy,
+)
+from crawfish.runtime.quorum import (
+    ConsensusFn,
+    ConsensusResult,
+    MajorityVote,
+    QuorumAbstention,
+    QuorumResult,
+    QuorumRuntime,
+    Sample,
+    majority_vote,
+    quorum_output,
 )
 from crawfish.sandbox import EgressBroker, EgressDenied, run_out_of_process
 from crawfish.scaffold import scaffold_project
@@ -828,4 +864,41 @@ __all__ = [
     "ExploreSchedule",
     "ExploreStrategy",
     "GraduationVerdict",
+    # M4 — taming stochasticity
+    # Quorum / self-consistency (CRA-215)
+    "QuorumRuntime",
+    "QuorumResult",
+    "QuorumAbstention",
+    "Sample",
+    "ConsensusResult",
+    "ConsensusFn",
+    "MajorityVote",
+    "majority_vote",
+    "quorum_output",
+    # Abstention as a typed Output (CRA-216)
+    "Abstention",
+    "ABSTENTION_MARKER",
+    "is_abstention",
+    "abstain_below",
+    "abstain_below_calibrated",
+    # House-guard: learned-then-distilled deterministic guards (CRA-217)
+    "HouseGuard",
+    "GuardCertificate",
+    "GuardStage",
+    "GuardNotEarned",
+    "GuardGrammarError",
+    "Predicate",
+    "Comparison",
+    "SetMembership",
+    "NumericBound",
+    "BoolCombination",
+    "Always",
+    "PredicateMetric",
+    "Interval",
+    "wilson_lower_bound",
+    # Constrained / grammar-guided decoding (CRA-218)
+    "Grammar",
+    "GrammarKind",
+    "GrammarError",
+    "parse_grammar",
 ]
