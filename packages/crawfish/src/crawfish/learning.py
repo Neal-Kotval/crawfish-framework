@@ -39,10 +39,21 @@ identical winner, identical baseline scores ⇒ identical promotion decision.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+import hashlib
+import json
+from enum import Enum
+
+from pydantic import BaseModel, Field
 
 from crawfish.core.context import RunContext
-from crawfish.definition.types import Definition
+from crawfish.definition.types import (
+    DECODE_KNOB_FIELDS,
+    AgentSpec,
+    Coordination,
+    Definition,
+    DefinitionRef,
+    Prompt,
+)
 from crawfish.eval import gate_against_baseline, load_baseline, save_baseline
 from crawfish.runtime.base import AgentRuntime
 from crawfish.store.base import Store
@@ -52,6 +63,18 @@ __all__ = [
     "VersionRecord",
     "PromotionOutcome",
     "LearningLoop",
+    # CRA-210 — AL-T2: the architecture/weights split (references-by-version transfer).
+    "IncompatibleStateError",
+    "RoleKnobs",
+    "StateDict",
+    "state_dict",
+    "load_state",
+    # CRA-214 — AL-T6: the explore-rate dial.
+    "ExploreStrategy",
+    "ExploreSchedule",
+    "GraduationVerdict",
+    "ServingDecision",
+    "ServingLoop",
 ]
 
 
@@ -276,3 +299,445 @@ class LearningLoop:
         self._set_active(sha)
         save_baseline(self.store, self._baseline_name, rec.scores, org_id=self.org_id)
         return rec.definition
+
+
+# ===========================================================================
+# CRA-210 — AL-T2: state_dict() / load_state() (R5, "Hugging-Face-for-agent-weights")
+# ---------------------------------------------------------------------------
+# The architecture/weights split. A Tuner/LearningLoop winner is an opaque whole-Definition
+# blob; you cannot transfer what it *learned* onto a sibling Definition of the same shape,
+# share it across a fleet, or A/B two knob settings on one architecture. ``state_dict`` is
+# the split: it serializes the **tunable knobs only** (the "weights") — per-role prompt /
+# decode knobs / model / context_strategy / policies, ``injected_prompts``,
+# ``coordination`` — plus *summoned units as references-by-version* (``DefinitionRef``),
+# **never** the architecture (team topology, IO schema, dependencies).
+#
+# Load-bearing rules:
+#   * JSON only (the DSPy stance: loading a state NEVER executes code — it carries knob
+#     VALUES, no callables, no nested executable Definition).
+#   * Only STATIC knobs move. A fluid value can never cross via a state dict (the knobs
+#     enumerated below are all author/static config); a consequential knob (model /
+#     policies) transferred is still static config, never a fluid-derived Sink target.
+#   * Copy-on-write: ``load_state`` re-freezes via the Tuner's ``_refreeze``, minting a
+#     fresh content sha — it never mutates the target Definition in place.
+#   * References-by-version: a summoned unit is stored as ``{id, version}``, not the
+#     embedded nested Definition — keeping the hash bounded and replay reproducible
+#     (vision §5 open Q). Embedding a full nested Definition is rejected at validation.
+
+
+class IncompatibleStateError(TypeError):
+    """``load_state(strict=True)`` was asked to load a state onto an incompatible shape.
+
+    Architecture (team topology / IO schema / dependencies) is identified by
+    :attr:`StateDict.structure_sha`; a mismatch means the knobs would land on a different
+    architecture. ``strict=True`` raises this; ``strict=False`` loads the structural
+    intersection instead (only the roles/knobs both shapes share).
+    """
+
+
+class RoleKnobs(BaseModel):
+    """The tunable knobs for one role — the per-role 'weights' (CRA-210).
+
+    Every field is a STATIC, author-supplied knob the Tuner is allowed to search; none is
+    fluid/session-derived. Decode knobs are carried only when pinned (``None`` ⇒ absent),
+    mirroring the hash-neutral-when-None law on :class:`AgentSpec`.
+    """
+
+    model_config = {"frozen": True}
+
+    prompt: str = ""
+    model: str | list[str] | None = None
+    context_strategy: str | None = None
+    policies: list[str] = Field(default_factory=list)
+    temperature: float | None = None
+    top_p: float | None = None
+    sample_k: int | None = None
+
+
+class StateDict(BaseModel):
+    """The tunable knobs of a Definition as references-by-version — the 'weights' (CRA-210).
+
+    Carries ONLY what the Tuner/LearningLoop may move: per-role knobs (:class:`RoleKnobs`),
+    the team ``coordination`` topology choice, ``injected_prompts``, and summoned units as
+    ``DefinitionRef`` (``{id, version}``) references-by-version. It carries **no**
+    architecture (team topology beyond the coordination choice, IO schema, dependency
+    structure) and **no** executable nested Definition — JSON only.
+
+    :attr:`structure_sha` is the content hash of the architecture the knobs were extracted
+    from (sorted role set, IO parameter names/types/flows, dependency ids, coordination
+    kind). Two Definitions with the same ``structure_sha`` are transfer-compatible.
+    :attr:`sha` is the content hash of the knob VALUES — editing any knob changes it
+    (the AC: "editing a knob changes ``StateDict.sha``").
+    """
+
+    model_config = {"frozen": True}
+
+    roles: dict[str, RoleKnobs] = Field(default_factory=dict)
+    coordination: Coordination = Coordination.SINGLE
+    injected_prompts: list[Prompt] = Field(default_factory=list)
+    # Summoned units as references-by-version — NEVER an embedded nested Definition.
+    summons: list[DefinitionRef] = Field(default_factory=list)
+    structure_sha: str = ""
+
+    @property
+    def sha(self) -> str:
+        """Deterministic 12-char content hash of the knob VALUES (the 'weights' identity).
+
+        Excludes :attr:`structure_sha` (that is architecture identity, not weights) so two
+        states with identical knobs over different shapes still compare equal on ``sha``;
+        editing any transferred knob value diverges it.
+        """
+        payload = {
+            "roles": {r: k.model_dump(mode="json") for r, k in sorted(self.roles.items())},
+            "coordination": self.coordination.value,
+            "injected_prompts": [p.model_dump(mode="json") for p in self.injected_prompts],
+            "summons": [s.model_dump(mode="json") for s in self.summons],
+        }
+        blob = json.dumps(payload, sort_keys=True, default=str).encode()
+        return hashlib.sha256(blob).hexdigest()[:12]
+
+
+def _structure_sha(definition: Definition) -> str:
+    """Content hash of a Definition's ARCHITECTURE — the transfer-compatibility key.
+
+    Folds the *shape*, never the tunable knobs: the sorted role set, the typed IO schema
+    (each parameter's name/type/flow), the dependency ids, and the coordination *kind*.
+    Two Definitions transfer-compatible iff this matches; editing a knob (prompt, model…)
+    leaves it unchanged, so a knob edit never makes a state look incompatible.
+    """
+    payload = {
+        "roles": sorted(a.role for a in definition.team.agents),
+        "inputs": sorted((p.name, str(p.type), p.flow.value) for p in definition.inputs),
+        "outputs": sorted((p.name, str(p.type), p.flow.value) for p in definition.outputs),
+        "dependencies": sorted(d.id for d in definition.dependencies),
+        "coordination": definition.team.coordination.value,
+    }
+    blob = json.dumps(payload, sort_keys=True, default=str).encode()
+    return hashlib.sha256(blob).hexdigest()[:12]
+
+
+def state_dict(definition: Definition) -> StateDict:
+    """Extract a Definition's tunable knobs as a references-by-version :class:`StateDict`.
+
+    Excludes architecture keys (team topology, IO schema, dependencies) by construction —
+    only the per-role tunable knobs, the coordination choice, ``injected_prompts``, and the
+    dependency *references* (as summoned-unit ``DefinitionRef``\\ s) are carried. Deterministic
+    and JSON-only. ``d.load_state(d.state_dict())`` re-mints the same content sha
+    (sha-identity), since the same knobs re-freeze to the same hash.
+    """
+    roles = {
+        agent.role: RoleKnobs(
+            prompt=agent.prompt,
+            model=agent.model,
+            context_strategy=agent.context_strategy,
+            policies=list(agent.policies),
+            temperature=agent.temperature,
+            top_p=agent.top_p,
+            sample_k=agent.sample_k,
+        )
+        for agent in definition.team.agents
+    }
+    # Summoned units travel as pinned references-by-version, not embedded Definitions:
+    # the dependency refs the Definition already declares (id + version).
+    summons = [DefinitionRef(id=d.id, version=d.version) for d in definition.dependencies]
+    return StateDict(
+        roles=roles,
+        coordination=definition.team.coordination,
+        injected_prompts=[p.model_copy(deep=True) for p in definition.injected_prompts],
+        summons=summons,
+        structure_sha=_structure_sha(definition),
+    )
+
+
+def load_state(
+    definition: Definition,
+    state: StateDict,
+    *,
+    strict: bool = True,
+    only: list[str] | None = None,
+) -> Definition:
+    """Transfer learned knob VALUES from ``state`` onto ``definition`` (copy-on-write).
+
+    Returns a NEW, re-frozen Definition (fresh content sha via the Tuner's ``_refreeze``) —
+    the target is never mutated in place. Only STATIC knobs move; no fluid value can cross.
+
+    * ``strict=True`` (default): raise :class:`IncompatibleStateError` if the architectures
+      differ (``state.structure_sha != _structure_sha(definition)``).
+    * ``strict=False``: load the structural **intersection** — apply knobs only for the
+      roles present in BOTH shapes, skipping the rest.
+    * ``only``: restrict which knob groups transfer. Members of
+      ``{"prompt", "model", "context_strategy", "policies", "decode", "fewshots",
+      "coordination"}``; e.g. ``only=["fewshots"]`` transfers only the injected few-shot
+      prompts. ``None`` transfers everything.
+    """
+    target_structure = _structure_sha(definition)
+    if strict and state.structure_sha and state.structure_sha != target_structure:
+        raise IncompatibleStateError(
+            f"state structure_sha {state.structure_sha!r} does not match target "
+            f"{target_structure!r}; pass strict=False to load the structural intersection"
+        )
+
+    groups = set(only) if only is not None else None
+
+    def _wants(group: str) -> bool:
+        return groups is None or group in groups
+
+    # -- per-role knobs (intersection of roles when not strict) -------------
+    new_agents: list[AgentSpec] = []
+    for agent in definition.team.agents:
+        knobs = state.roles.get(agent.role)
+        if knobs is None:
+            new_agents.append(agent.model_copy(deep=True))
+            continue
+        updates: dict[str, object] = {}
+        if _wants("prompt"):
+            updates["prompt"] = knobs.prompt
+        if _wants("model"):
+            updates["model"] = knobs.model
+        if _wants("context_strategy"):
+            updates["context_strategy"] = knobs.context_strategy
+        if _wants("policies"):
+            updates["policies"] = list(knobs.policies)
+        if _wants("decode"):
+            for name in DECODE_KNOB_FIELDS:
+                updates[name] = getattr(knobs, name)
+        new_agents.append(agent.model_copy(update=updates, deep=True))
+
+    new_team = definition.team.model_copy(
+        update={
+            "agents": new_agents,
+            **({"coordination": state.coordination} if _wants("coordination") else {}),
+        },
+        deep=True,
+    )
+
+    def_updates: dict[str, object] = {"team": new_team}
+    if _wants("fewshots"):
+        def_updates["injected_prompts"] = [p.model_copy(deep=True) for p in state.injected_prompts]
+
+    loaded = definition.model_copy(update=def_updates, deep=True)
+    # Copy-on-write: re-freeze to mint a fresh content sha (never an in-place edit).
+    return _refreeze(definition, loaded)
+
+
+# ===========================================================================
+# CRA-214 — AL-T6: the explore-rate dial (the serving-time bandit overlay)
+# ---------------------------------------------------------------------------
+# ``LearningLoop.improve`` is a one-shot OFFLINE optimizer; nothing routes a bounded
+# fraction of LIVE items to a trial candidate and feeds the outcomes back. The
+# :class:`ServingLoop` is that overlay: route ``(1-ε)`` of items to the promoted best and
+# ``ε`` to a trial candidate, choosing which items explore by a **seeded hash of the
+# recorded** ``item_id`` — so a replay re-explores EXACTLY the same items (deterministic
+# under replay ⇒ identical graduation).
+#
+# Fixes applied (ML blockers from the issue):
+#   * Bare fixed-ε is the weakest bandit ⇒ a **decaying-ε schedule** is the default, with a
+#     typed :class:`ExploreStrategy` hook reserving UCB1/Thompson (they need only per-arm
+#     reward mean + count, already in the emission ledger; the deterministic-hash router is
+#     what ships).
+#   * A continuously-re-tested gate has an optional-stopping/peeking failure mode ⇒
+#     graduation uses a **pre-registered per-trial sample size** (no verdict before N
+#     outcomes) — :meth:`ServingLoop.graduate` returns ``decided=False`` until N is reached,
+#     controlling Type-I error under continuous peeking.
+#   * ε is bounded by the shared ``CostBudget``: once exhausted, exploration stops (route
+#     everything to the promoted best).
+#
+# Determinism: every stochastic choice derives from one recorded ``seed`` + the recorded
+# ``item_id`` ⇒ identical explored subset ⇒ identical graduation. Only STATIC knobs are ever
+# promoted (the trial graduates through the same eval gate as ``improve``).
+
+
+class ExploreStrategy(str, Enum):
+    """How a :class:`ServingLoop` chooses *which* items explore.
+
+    ``HASH`` (the shipped, deterministic-under-replay router) routes by a seeded hash of the
+    recorded ``item_id``. ``UCB1``/``THOMPSON`` are reserved hooks: they need only per-arm
+    reward mean + count (already in the emission ledger) and are out-of-scope here as a
+    *router*, declared so a future strategy plugs in without an API change.
+    """
+
+    HASH = "hash"
+    UCB1 = "ucb1"
+    THOMPSON = "thompson"
+
+
+class ExploreSchedule(BaseModel):
+    """The ε dial + its decay — a decaying-ε schedule (CRA-214).
+
+    ``epsilon`` is the base explore rate in ``[0, 1]``; ``decay`` shrinks it as served items
+    accumulate: the effective rate after ``n`` served items is
+    ``epsilon / (1 + decay * n)`` (so ``decay=0`` is a flat fixed-ε). ``epsilon=0`` disables
+    exploration entirely (the no-op overlay AC).
+    """
+
+    model_config = {"frozen": True}
+
+    epsilon: float = 0.0
+    decay: float = 0.0
+    strategy: ExploreStrategy = ExploreStrategy.HASH
+
+    def rate_at(self, served: int) -> float:
+        """The effective explore rate after ``served`` items (decaying-ε)."""
+        if self.epsilon <= 0.0:
+            return 0.0
+        return self.epsilon / (1.0 + self.decay * max(0, served))
+
+
+def _explore_hash(item_id: str, seed: int) -> float:
+    """A deterministic value in ``[0, 1)`` from ``(item_id, seed)`` — the explore die.
+
+    Seeded SHA-256 over the recorded ``item_id`` (a trusted, static signal — never a fluid
+    value): the same ``(item_id, seed)`` always yields the same fraction, so a replay
+    re-explores exactly the same items. Mirrors the cassette-key hashing law in
+    ``runtime/replay.py`` (sorted-JSON → sha256), keeping one hashing idiom in the codebase.
+    """
+    blob = json.dumps({"item_id": item_id, "seed": seed}, sort_keys=True).encode()
+    digest = hashlib.sha256(blob).digest()
+    # First 8 bytes → an integer in [0, 2**64), normalised to [0, 1).
+    return int.from_bytes(digest[:8], "big") / float(1 << 64)
+
+
+class ServingDecision(BaseModel):
+    """The routing verdict for one live item (the audit record).
+
+    ``explore`` is True iff the item was routed to the trial candidate. ``version`` is the
+    routed Definition's ``str(version)``. The decision is a pure function of
+    ``(item_id, seed, schedule, served, budget)`` — deterministic under replay.
+    """
+
+    model_config = {"frozen": True}
+
+    item_id: str
+    explore: bool
+    version: str
+
+
+class GraduationVerdict(BaseModel):
+    """The pre-registered-N graduation decision for a trial arm (no-peeking, CRA-214).
+
+    ``decided`` is False until ``n_outcomes >= sample_size`` — the gate refuses a verdict
+    before the pre-registered sample size is reached, so continuous peeking cannot inflate
+    the false-promotion rate. Once decided, ``graduate`` is True iff the trial's mean reward
+    strictly beats the baseline's by at least ``min_lift`` (the eval gate still applies on
+    promotion via the :class:`LearningLoop`).
+    """
+
+    model_config = {"frozen": True}
+
+    decided: bool
+    graduate: bool
+    n_outcomes: int
+    sample_size: int
+    trial_mean: float
+    baseline_mean: float
+    reason: str
+
+
+class ServingLoop:
+    """A serving-time explore/exploit overlay over a promoted best + a trial candidate.
+
+    Routes ``(1-ε)`` of live items to ``promoted`` and ``ε`` to ``trial``, choosing the
+    explored items by a seeded hash of each recorded ``item_id`` (deterministic under
+    replay). ε follows a decaying schedule and is bounded by the shared ``CostBudget``: once
+    the budget is exhausted, every item routes to the promoted best (no exploration).
+
+    The trial graduates ONLY through the eval gate — this loop decides *whether enough
+    evidence has accrued* (pre-registered N), not whether to promote; promotion stays with
+    the :class:`LearningLoop` (eval-gated + reversible). Both arms are frozen, eval-mode
+    Definitions; only STATIC knobs are ever promoted.
+    """
+
+    def __init__(
+        self,
+        promoted: Definition,
+        trial: Definition,
+        schedule: ExploreSchedule,
+        *,
+        seed: int = 0,
+        sample_size: int = 100,
+        min_lift: float = 0.0,
+        org_id: str = "local",
+    ) -> None:
+        if sample_size < 1:
+            raise ValueError("sample_size (pre-registered N) must be >= 1")
+        self.promoted = promoted
+        self.trial = trial
+        self.schedule = schedule
+        self.seed = seed
+        self.sample_size = sample_size
+        self.min_lift = min_lift
+        self.org_id = org_id
+        self._served = 0
+
+    def route(self, item_id: str, ctx: RunContext) -> ServingDecision:
+        """Route one live item to the promoted best or the trial candidate.
+
+        Explore iff the budget has room AND the seeded item hash falls under the effective
+        (decaying) explore rate. Deterministic: same ``(item_id, seed, served, schedule)`` ⇒
+        same decision. Advances the internal served counter (drives ε decay) — so a replay
+        must route items in the same recorded order to reproduce exactly.
+        """
+        rate = self.schedule.rate_at(self._served)
+        self._served += 1
+        budget_ok = ctx.cost_budget.remaining_usd is None or ctx.cost_budget.remaining_usd > 0.0
+        explore = rate > 0.0 and budget_ok and _explore_hash(item_id, self.seed) < rate
+        chosen = self.trial if explore else self.promoted
+        return ServingDecision(
+            item_id=item_id,
+            explore=explore,
+            version=str(chosen.version),
+        )
+
+    def explored_items(self, item_ids: list[str], ctx: RunContext) -> list[str]:
+        """The deterministic subset of ``item_ids`` routed to the trial (the explored set).
+
+        A pure projection of :meth:`route` for the whole batch — same ``(seed, item_ids)`` ⇒
+        identical explored subset (the AC). Resets and restores the served counter so it is a
+        side-effect-free query.
+        """
+        saved = self._served
+        try:
+            self._served = 0
+            return [i for i in item_ids if self.route(i, ctx).explore]
+        finally:
+            self._served = saved
+
+    def graduate(
+        self, trial_rewards: list[float], baseline_rewards: list[float]
+    ) -> GraduationVerdict:
+        """Decide whether the trial has accrued enough evidence to graduate (no-peeking).
+
+        Returns ``decided=False`` until ``len(trial_rewards) >= sample_size`` — the
+        pre-registered-N rule that controls Type-I error under continuous peeking. Once
+        decided, graduates iff the trial's mean reward beats the baseline's by at least
+        ``min_lift``. A trial that loses to baseline never graduates (so the promoted best is
+        unchanged); the eval gate on the :class:`LearningLoop` still applies on promotion.
+        """
+        n = len(trial_rewards)
+        trial_mean = sum(trial_rewards) / n if n else 0.0
+        base_mean = sum(baseline_rewards) / len(baseline_rewards) if baseline_rewards else 0.0
+        if n < self.sample_size:
+            return GraduationVerdict(
+                decided=False,
+                graduate=False,
+                n_outcomes=n,
+                sample_size=self.sample_size,
+                trial_mean=trial_mean,
+                baseline_mean=base_mean,
+                reason=f"peeking: {n}/{self.sample_size} outcomes — no verdict before N",
+            )
+        graduate = trial_mean - base_mean >= self.min_lift and trial_mean > base_mean
+        reason = (
+            f"trial mean {trial_mean:.4g} beats baseline {base_mean:.4g} by >= {self.min_lift:.4g}"
+            if graduate
+            else f"trial mean {trial_mean:.4g} does not beat baseline {base_mean:.4g}"
+        )
+        return GraduationVerdict(
+            decided=True,
+            graduate=graduate,
+            n_outcomes=n,
+            sample_size=self.sample_size,
+            trial_mean=trial_mean,
+            baseline_mean=base_mean,
+            reason=reason,
+        )

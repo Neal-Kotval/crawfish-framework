@@ -107,12 +107,16 @@ from crawfish.eval import (
     EvalCase,
     GoldenSet,
     LLMJudge,
+    PromotionVerdict,
     capture_case,
     gate_against_baseline,
     grade_output,
     load_baseline,
+    load_baseline_std,
     migrate_golden_set,
+    promote_against_baseline,
     save_baseline,
+    save_baseline_from_report,
     upconvert_case,
 )
 from crawfish.executor import (
@@ -144,7 +148,21 @@ from crawfish.jail import (
     rehydrate_registry,
     select_jail,
 )
-from crawfish.learning import LearningLoop, PromotionOutcome, VersionRecord
+from crawfish.learning import (
+    ExploreSchedule,
+    ExploreStrategy,
+    GraduationVerdict,
+    IncompatibleStateError,
+    LearningLoop,
+    PromotionOutcome,
+    RoleKnobs,
+    ServingDecision,
+    ServingLoop,
+    StateDict,
+    VersionRecord,
+    load_state,
+    state_dict,
+)
 from crawfish.ledger import ExecState, ExecutionLedger
 from crawfish.manage import PipelineStatus, format_table, manage_list, restart_target
 from crawfish.memory import Memory
@@ -794,4 +812,20 @@ __all__ = [
     "CalibrationReport",
     "extract_confidence",
     "abstention_threshold",
+    # Variance-aware promotion gate (CRA-212)
+    "promote_against_baseline",
+    "PromotionVerdict",
+    "load_baseline_std",
+    "save_baseline_from_report",
+    # state_dict transfer + explore-rate serving loop (CRA-210, CRA-214)
+    "state_dict",
+    "load_state",
+    "StateDict",
+    "RoleKnobs",
+    "IncompatibleStateError",
+    "ServingLoop",
+    "ServingDecision",
+    "ExploreSchedule",
+    "ExploreStrategy",
+    "GraduationVerdict",
 ]

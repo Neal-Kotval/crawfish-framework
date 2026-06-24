@@ -26,8 +26,14 @@ from crawfish.emission import (
     Provenance,
     read_corrections,
 )
-from crawfish.experiment import holm_correction, paired_bootstrap_ci
-from crawfish.metrics import Rubric, is_regression
+from crawfish.experiment import holm_correction, paired_bootstrap_ci, winners_curse_shrink
+from crawfish.metrics import (
+    CalibrationReport,
+    Rubric,
+    is_regression,
+    is_regression_variance_aware,
+    noise_band,
+)
 from crawfish.output import Output
 from crawfish.runtime.base import AgentRuntime
 from crawfish.runtime.team import run_team
@@ -42,7 +48,12 @@ __all__ = [
     "grade_output",
     "save_baseline",
     "load_baseline",
+    "load_baseline_std",
     "gate_against_baseline",
+    # -- variance-aware promotion gate (AL-T5 / CRA-212) --
+    "promote_against_baseline",
+    "save_baseline_from_report",
+    "PromotionVerdict",
     "upconvert_case",
     "migrate_golden_set",
     # -- the gate algebra (F-3 / CRA-196) --
@@ -302,14 +313,72 @@ async def grade_output(
 
 
 # -- regression baselines -----------------------------------------------------
+# The baseline scores live under the ``eval_baseline`` kind; the optional per-metric
+# *std* (the noise band the variance-aware gate keys off, AL-T5) lives in a PARALLEL
+# ``eval_baseline_std`` record under the same ``name``/``org_id``. Keeping std in a
+# separate record is what makes the format back-compatible: a baseline saved before
+# CRA-212 has no std record, so ``load_baseline`` returns the identical ``dict[str,
+# float]`` it always did and the variance-aware gate degrades to ``std == 0`` (i.e.
+# byte-for-byte today's behaviour). Both records carry ``org_id`` (tenancy).
+_BASELINE_KIND = "eval_baseline"
+_BASELINE_STD_KIND = "eval_baseline_std"
+
+
 def save_baseline(
-    store: Store, name: str, scores: dict[str, float], *, org_id: str = "local"
+    store: Store,
+    name: str,
+    scores: dict[str, float],
+    *,
+    std: dict[str, float] | None = None,
+    org_id: str = "local",
 ) -> None:
-    store.put_record("eval_baseline", name, dict(scores), org_id=org_id)
+    """Persist a regression baseline's per-metric ``scores`` (and optional ``std``).
+
+    The ``scores`` record format is unchanged (CRA-212 back-compat): old baselines and
+    callers that pass no ``std`` write exactly the record they always did. When ``std``
+    is given (e.g. from :attr:`~crawfish.metrics.CalibrationReport.rubric_std`) it is
+    written to a parallel ``eval_baseline_std`` record so the variance-aware promotion
+    gate can read the noise band. Passing ``std=None`` leaves any existing std record in
+    place (it does not erase a previously-recorded band).
+    """
+    store.put_record(_BASELINE_KIND, name, dict(scores), org_id=org_id)
+    if std is not None:
+        store.put_record(_BASELINE_STD_KIND, name, dict(std), org_id=org_id)
 
 
 def load_baseline(store: Store, name: str, *, org_id: str = "local") -> dict[str, float] | None:
-    rec = store.get_record("eval_baseline", name, org_id=org_id)
+    rec = store.get_record(_BASELINE_KIND, name, org_id=org_id)
+    return None if rec is None else {k: float(v) for k, v in rec.items()}
+
+
+def save_baseline_from_report(
+    store: Store, name: str, report: CalibrationReport, *, org_id: str = "local"
+) -> None:
+    """Persist a baseline from a :class:`~crawfish.metrics.CalibrationReport`.
+
+    Convenience over :func:`save_baseline`: stores the report's ``rubric_mean`` as the
+    baseline scores and its ``rubric_std`` as the noise band the variance-aware
+    promotion gate keys off. The report's ``org_id`` is respected when ``org_id`` is left
+    at its default, so the baseline lands in the report's tenancy.
+    """
+    target_org = report.org_id if org_id == "local" else org_id
+    save_baseline(
+        store,
+        name,
+        dict(report.rubric_mean),
+        std=dict(report.rubric_std),
+        org_id=target_org,
+    )
+
+
+def load_baseline_std(store: Store, name: str, *, org_id: str = "local") -> dict[str, float] | None:
+    """Load the per-metric std recorded alongside a baseline, or ``None`` if absent.
+
+    ``None`` (no std record — every baseline saved before CRA-212, or any saved without
+    a ``std``) is the signal that the variance-aware gate must fall back to a zero-width
+    noise band, reducing to :func:`gate_against_baseline`.
+    """
+    rec = store.get_record(_BASELINE_STD_KIND, name, org_id=org_id)
     return None if rec is None else {k: float(v) for k, v in rec.items()}
 
 
@@ -326,6 +395,140 @@ def gate_against_baseline(
     if baseline is None:
         return True  # no baseline yet — nothing to regress against
     return not is_regression(baseline, candidate, tolerance=tolerance)
+
+
+# -- variance-aware promotion gate (AL-T5 / CRA-212) --------------------------
+@dataclass(frozen=True)
+class PromotionVerdict:
+    """The outcome of :func:`promote_against_baseline` — promote-or-not + the why.
+
+    ``promoted`` is the decision; ``regressed`` is the hard-gate result (any metric fell
+    past its noise band — vetoes promotion regardless of gains); ``cleared_band`` is the
+    improvement result (the primary metric's gain exceeded ``k·std``). A candidate is
+    promoted iff it did **not** regress **and** it cleared the band.
+    """
+
+    promoted: bool
+    regressed: bool
+    cleared_band: bool
+    primary: str
+    primary_gain: float
+    primary_band: float
+    reason: str
+
+
+def promote_against_baseline(
+    store: Store,
+    name: str,
+    candidate: dict[str, float],
+    *,
+    primary: str,
+    alpha: float = 0.05,
+    tolerance: float = 0.0,
+    org_id: str = "local",
+    fresh_sample: dict[str, float] | None = None,
+    shrink_weight: float = 1.0,
+) -> PromotionVerdict:
+    """Variance-aware promotion gate (AL-T5) — promote only past the noise band.
+
+    Reads the stored baseline scores **and** the parallel per-metric ``std`` record
+    (:func:`load_baseline_std`). The candidate is promoted iff BOTH hold:
+
+    * **Hard gate (unchanged F-3 invariant).** It does not regress on *any* metric —
+      :func:`~crawfish.metrics.is_regression_variance_aware` with the recorded ``std``
+      (so a within-noise dip is tolerated, but a real drop on a non-primary metric still
+      vetoes promotion). A candidate that maxes ``primary`` while regressing another
+      metric is rejected.
+    * **Improvement clears the band.** The ``primary`` metric's gain over baseline
+      exceeds its noise band ``k·std`` (``k`` derived from ``alpha`` via
+      :func:`~crawfish.metrics.noise_band`). A within-noise "improvement" does NOT
+      promote.
+
+    **Back-compat (std=0 ⇒ k·std=0).** With no std record (pre-CRA-212 baseline) or a
+    zero std, the band is zero-width: the hard gate reduces byte-for-byte to
+    :func:`is_regression` and the improvement test reduces to "primary gain > 0" — i.e.
+    today's single-point behaviour. With no baseline at all, promotion is allowed
+    (nothing to regress against), mirroring :func:`gate_against_baseline`.
+
+    **Winner's-curse correction (F-8).** When ``fresh_sample`` is given, the promoted
+    metrics are shrunk toward that fresh, independent estimate
+    (:func:`~crawfish.experiment.winners_curse_shrink`) before being stored as the new
+    baseline, so the bar cannot ratchet up on selection noise. The stored baseline keeps
+    the recorded ``std`` band. (A rejected candidate writes nothing.)
+
+    Deterministic and pure given the recorded scores + std: same inputs ⇒ same verdict.
+    """
+    baseline = load_baseline(store, name, org_id=org_id)
+    # ``std_raw is None`` means NO std record (pre-CRA-212 baseline); preserve that on the
+    # promote path so we never materialise an empty ``{}`` band record. ``std`` is the
+    # arithmetic view (empty band ⇒ zero-width ⇒ reduces to ``is_regression``).
+    std_raw = load_baseline_std(store, name, org_id=org_id)
+    std = std_raw or {}
+    band = noise_band(std, alpha=alpha)
+
+    if baseline is None:
+        # No baseline yet — nothing to regress against; seed-and-promote.
+        primary_gain = candidate.get(primary, 0.0)
+        return PromotionVerdict(
+            promoted=True,
+            regressed=False,
+            cleared_band=True,
+            primary=primary,
+            primary_gain=primary_gain,
+            primary_band=0.0,
+            reason="no baseline — seeded",
+        )
+
+    if primary not in baseline or primary not in candidate:
+        raise KeyError(f"primary metric {primary!r} missing from baseline or candidate scores")
+
+    regressed = is_regression_variance_aware(
+        baseline, candidate, std=std, alpha=alpha, tolerance=tolerance
+    )
+    primary_gain = candidate[primary] - baseline[primary]
+    primary_band = band.get(primary, 0.0)
+    # Improvement must clear the noise band (strict): a within-band gain is noise.
+    cleared_band = primary_gain > primary_band
+    promoted = (not regressed) and cleared_band
+
+    if regressed:
+        reason = "regression past noise band on some metric (hard gate vetoed)"
+    elif not cleared_band:
+        reason = (
+            f"primary {primary!r} gain {primary_gain:.4g} within noise band "
+            f"{primary_band:.4g} — not promoted"
+        )
+    else:
+        reason = f"primary {primary!r} gain {primary_gain:.4g} clears noise band {primary_band:.4g}"
+
+    verdict = PromotionVerdict(
+        promoted=promoted,
+        regressed=regressed,
+        cleared_band=cleared_band,
+        primary=primary,
+        primary_gain=primary_gain,
+        primary_band=primary_band,
+        reason=reason,
+    )
+
+    if promoted:
+        # Winner's-curse correction (F-8): shrink the selected (optimistic) scores toward a
+        # fresh estimate before they become the bar the next round must beat. The std band
+        # is carried forward so the new baseline stays variance-aware.
+        to_store = dict(candidate)
+        if fresh_sample is not None:
+            to_store = {
+                m: winners_curse_shrink(candidate[m], fresh_sample[m], weight=shrink_weight)
+                if m in fresh_sample
+                else candidate[m]
+                for m in candidate
+            }
+        # Carry the band forward verbatim: ``std_raw`` (``None`` when there was no std
+        # record) so a pre-CRA-212 baseline stays std-record-free after promotion rather
+        # than gaining an empty ``{}`` band.
+        save_baseline(store, name, to_store, std=std_raw, org_id=org_id)
+
+    return verdict
 
 
 # ===========================================================================

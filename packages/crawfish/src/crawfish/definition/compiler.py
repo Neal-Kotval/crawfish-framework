@@ -26,7 +26,7 @@ import importlib.util
 import json
 import tomllib
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 
@@ -42,6 +42,9 @@ from crawfish.definition.types import (
     TeamSpec,
 )
 from crawfish.versioning.version import Version
+
+if TYPE_CHECKING:
+    from crawfish.tune import TuneSpec
 
 __all__ = ["load_definition", "DefinitionLoadError"]
 
@@ -221,6 +224,18 @@ def load_definition(path: str | Path) -> Definition:
             parts = str(meta["version"]).split(".")
             version = Version(major=int(parts[0]), minor=int(parts[1]) if len(parts) > 1 else 0)
 
+    # -- tune.toml: the tunable knob space (CRA-209 / AL-T1) -----------------
+    # Authored as ``tune.toml`` (array-of-tables of [[knob]]). Absent or empty -> the
+    # Definition is tune-less (``tune=None``), hash-neutral (see Definition.content_dict).
+    tune: TuneSpec | None = None
+    tune_toml = root / "tune.toml"
+    if tune_toml.exists():
+        from crawfish.tune import TuneSpec
+
+        tune_spec = TuneSpec.from_toml(tune_toml.read_text())
+        if tune_spec.knobs:  # an empty tune.toml stays hash-neutral
+            tune = tune_spec
+
     sha = _content_sha(root)
     if version is None:
         version = Version(sha=sha)
@@ -264,6 +279,7 @@ def load_definition(path: str | Path) -> Definition:
         outputs=outputs,
         dependencies=dependencies,
         assets=assets,
+        tune=tune,
     )
 
     _write_lock(root, definition)

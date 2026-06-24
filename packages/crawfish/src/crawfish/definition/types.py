@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
     from crawfish.borrow import Borrow
     from crawfish.store.base import Store
+    from crawfish.tuner import TuneSpec
 
 __all__ = [
     "Coordination",
@@ -43,6 +44,13 @@ __all__ = [
 # F-5). The decode-knob fields are *hash-neutral when None* (see ``Definition.content_dict``):
 # an unmigrated artifact that never set them keeps its pre-v1 sha byte-for-byte. An artifact
 # that pins any knob gets a new sha and must be re-frozen. See docs/_changelog/F-5.md.
+#
+# CRA-209 / AL-T1 added the optional ``Definition.tune`` (the tunable knob space). It is
+# *hash-neutral when empty*, on exactly the same principle: a tune-less Definition omits the
+# ``tune`` key from ``content_dict`` and keeps its pre-existing sha byte-for-byte, so the
+# constant is deliberately NOT bumped (a bump would re-key every tune-less frozen artifact).
+# Only a non-empty tune folds ``tune_spec_sha`` in and diverges the sha. See
+# docs/_changelog/CRA-209-tune-wiring.md.
 CONTENT_HASH_VERSION = 1
 
 # The tunable decode knobs the Tuner searches and ``state_dict`` serializes. They are the
@@ -160,6 +168,14 @@ class Definition(Freezable):
     outputs: list[Parameter] = Field(default_factory=list)
     dependencies: list[DefinitionRef] = Field(default_factory=list)
     assets: DefinitionAssets = Field(default_factory=DefinitionAssets)
+    # -- Axis 1 as data: the tunable knob space (CRA-209 / AL-T1) -------------
+    # The set of knobs the Tuner may search, authored as ``tune.toml`` and folded into
+    # the content identity (see :meth:`content_dict`). It is **hash-neutral when empty**:
+    # a tune-less Definition omits the ``tune`` key entirely and hashes byte-for-byte as
+    # before — adding an empty ``tune.toml`` does not perturb any pre-existing artifact.
+    # A non-empty tune folds ``tune_spec_sha`` into the content hash, so editing the search
+    # space versions the agent (a real content change — tuning *is* a content change).
+    tune: TuneSpec | None = None
 
     @classmethod
     def from_package(cls, path: str) -> Definition:
@@ -170,14 +186,19 @@ class Definition(Freezable):
 
     def content_dict(self) -> dict[str, object]:
         """The canonical hash payload: the model dump minus the volatile ``version``,
-        with each agent's decode knobs dropped when None.
+        with each agent's decode knobs dropped when None and the tune-spec folded in
+        as a single sha (only when non-empty).
 
-        This is the migration seam for ADR 0017 / F-5. Adding the optional decode
-        knobs to ``AgentSpec`` would otherwise emit ``"temperature": null`` (etc.)
-        into every dump and perturb the sha of every pre-existing frozen artifact.
-        Dropping them when None makes the new fields **hash-neutral for unmigrated
-        artifacts** — their sha is byte-identical to the pre-v1 hash — while an
-        artifact that pins any knob hashes differently (and must be re-frozen).
+        This is the migration seam for ADR 0017 / F-5 (decode knobs) and CRA-209 / AL-T1
+        (the tune-spec). Adding the optional decode knobs to ``AgentSpec`` — or the
+        optional ``tune`` field to ``Definition`` — would otherwise emit ``null`` into
+        every dump and perturb the sha of every pre-existing frozen artifact. Dropping
+        them when None/empty makes the new fields **hash-neutral for unmigrated
+        artifacts** — their sha is byte-identical to the pre-change hash — while an
+        artifact that pins any knob (or authors a non-empty ``tune.toml``) hashes
+        differently (and must be re-frozen). The tune-spec is folded as
+        ``tune_spec_sha`` rather than its raw dict so the payload stays compact and the
+        rule is a single line.
         """
         payload = self.model_dump(mode="json")
         # ``version`` is volatile (it CARRIES the sha) and ``id`` is identity, not
@@ -194,6 +215,15 @@ class Definition(Freezable):
                         for name in DECODE_KNOB_FIELDS:
                             if agent.get(name) is None:
                                 agent.pop(name, None)
+        # The tune-spec is hash-neutral when absent/empty: drop the key entirely so a
+        # tune-less Definition hashes EXACTLY as before. A non-empty tune folds its
+        # content sha in (versioning the search space). ``tune_spec_sha`` of an empty
+        # spec is a non-trivial constant, so we MUST omit (not fold) it when empty.
+        payload.pop("tune", None)
+        if self.tune is not None and self.tune.knobs:
+            from crawfish.tune import tune_spec_sha
+
+            payload["tune"] = tune_spec_sha(self.tune)
         return payload
 
     def content_sha(self) -> str:
@@ -262,3 +292,12 @@ class Definition(Freezable):
 
 # keep Version importable from here for the loader's convenience
 _ = Version
+
+# ``Definition.tune`` annotates ``TuneSpec`` (defined in the light ``crawfish.tune`` module,
+# which has NO heavy imports and no cycle with this module). Importing it at the bottom — after
+# ``Definition`` is fully defined — lets Pydantic resolve the field before anything forces the
+# schema to completion (e.g. ``runtime.base``'s ``RunRequest.model_rebuild``). ``crawfish.tuner``
+# re-exports the same class object, so ``from crawfish.tuner import TuneSpec`` round-trips.
+from crawfish.tune import TuneSpec  # noqa: E402
+
+Definition.model_rebuild()
