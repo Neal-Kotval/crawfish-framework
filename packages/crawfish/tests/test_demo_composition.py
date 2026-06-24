@@ -120,6 +120,53 @@ def test_recurse_folded_all_parts(module, result) -> None:
     assert result.recurse_final_sha
 
 
+def test_recurse_correct_under_marker_less_body(module) -> None:
+    """The recurse is correct when the body emits PLAIN PROSE with NO demo markers.
+
+    This simulates the REAL model: the body returns prose (no ``_recurse_depth`` /
+    ``sub_answer`` marker the mock emits). The defect this closes: a base case or fold that
+    *infers depth from the model Output* would descend to ``max_depth`` and fold 0 parts.
+    With the engine-authoritative ``depth`` driving the base case and ``len(children)``
+    driving the fold, it must instead stop on ``base_case`` at exactly ``parts`` levels and
+    fold ``parts`` REAL sub-answers — one real prose answer per level.
+    """
+    from crawfish.runtime import MockRuntime
+
+    parts = module._MULTI_PART_COUNT
+    # A marker-less responder: plain prose per call, no demo marker fields whatsoever.
+    prose = iter(
+        [f"Sub-answer #{i}: here is the real model's prose reply." for i in range(parts + 2)]
+    )
+
+    def _responder(_req):
+        return next(prose)
+
+    store = SqliteStore()
+    ctx = RunContext(store=store, org_id="acme", cost_budget=CostBudget(limit_usd=3.0))
+    rec = module._build_recurse(parts)  # same base_case/fold as the scenario
+    seed = Output(
+        # the seed carries ONLY the ticket — no depth marker the body could echo
+        value={"ticket_body": module._MULTI_PART_TICKET},
+        produced_by="recurse-seed",
+        lineage=module._MULTI_PART_TICKET,
+        output_schema=[],
+    )
+    res = asyncio.run(rec.execute(seed, ctx, MockRuntime(responder=_responder)))
+
+    # stopped on the base case at exactly `parts` levels — NOT the max_depth bound
+    assert res.stopped == "base_case"
+    assert res.depth_reached == parts
+    assert res.depth_reached < module.RECURSE_MAX_DEPTH
+    # folded exactly `parts` REAL children, and each real sub-answer is in the reply
+    folded = res.output.value
+    assert isinstance(folded, dict)
+    assert folded["_parts_folded"] == parts
+    reply = folded["reply"]
+    assert isinstance(reply, str)
+    assert reply.count("Sub-answer #") == parts  # one real prose answer per level, folded
+    store.close()
+
+
 def test_recurse_never_exceeds_max_depth_even_unsatisfiable(module) -> None:
     """With a never-true base case the recurse is STILL bounded — it stops at max_depth.
 
@@ -133,7 +180,7 @@ def test_recurse_never_exceeds_max_depth_even_unsatisfiable(module) -> None:
     body = module._build_recurse_body()
     rec = recurse(
         body,
-        base_case=lambda _out: False,  # never satisfied
+        base_case=lambda _out, _depth: False,  # never satisfied
         max_depth=module.RECURSE_MAX_DEPTH,
         combine=module._fold_sub_answers,
         edge_id=module.RECURSE_EDGE_ID,
@@ -157,7 +204,7 @@ def test_unbounded_recurse_is_rejected_at_construction(module) -> None:
     with pytest.raises(UnboundedRecursionError):
         recurse(
             body,
-            base_case=lambda _out: True,
+            base_case=lambda _out, _depth: True,
             max_depth=None,
             combine=module._fold_sub_answers,
         )

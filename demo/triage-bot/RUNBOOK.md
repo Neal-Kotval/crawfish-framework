@@ -335,14 +335,20 @@ step 9):
   descends **one level per part**, answers each, and folds the descent-order sub-answers
   into one reply. `max_depth` (`RECURSE_MAX_DEPTH = 4`) is the STATIC, assembly-required
   bound the descent never exceeds (`UnboundedRecursionError` if `None`); the pure base
-  case stops descent once every part is answered, so a healthy run stops on **`base_case`**
-  (3 levels), not the bound. Each level checkpoints to the F-2 depth-variant ledger, so a
-  mid-recursion crash resumes at **`$0`**.
+  case `base_case(output, depth)` stops descent once `depth + 1 >= parts` — using the
+  **engine-authoritative** 0-based `depth` (trusted harness state), NOT a marker read from
+  the model's free-form Output — so a real-model body that emits plain prose still stops on
+  **`base_case`** (3 levels), not the bound. The fold (`_fold_sub_answers`) counts parts by
+  `len(children)` (the engine-produced level count) and folds each level's REAL prose, so
+  it never depends on a structured marker the real model won't emit. Each level checkpoints
+  to the F-2 depth-variant ledger, so a mid-recursion crash resumes at **`$0`**.
 
 In the scenario the recurse stops on a **base-case** (`recurse_stopped == "base_case"`),
 3 levels in, well under the depth bound — the case that proves the base case (not the
-bound) halts a healthy run, while `test_demo_composition.py` proves the bound is still
-load-bearing when the base case never fires.
+bound) halts a healthy run. `test_demo_composition.py` proves both that the bound is still
+load-bearing when the base case never fires AND that the recurse is correct under a
+**marker-less** (real-model-shaped) body — stopping on `base_case` at `parts` levels and
+folding `parts` real sub-answers.
 
 ### Exact command for the M2 live gate
 
@@ -374,4 +380,102 @@ Run the command above and confirm, on the `router branch` / `recurse` lines unde
 
 The deterministic path (`uv run craw demo`, `$0`) exercises every one of these off the
 mock runtime; the acceptance test is
-`packages/crawfish/tests/test_demo_composition.py` (12 tests, no live calls).
+`packages/crawfish/tests/test_demo_composition.py` (13 tests, no live calls — including
+`test_recurse_correct_under_marker_less_body`, which simulates the real model with a
+plain-prose body and asserts the base-case stop + real-prose fold).
+
+### M2 live-acceptance gate — RUN BY `verifier-m2` (2026-06-24, `claude-haiku-4-5`) — ⚠️ FAIL (1 of 6: recurse base-case)
+
+Run against the **real** logged-in `claude -p` (`claude 2.1.187`, authed; `claude -p "say
+ok"` → `OK`). Cassettes were cleared to force a true fresh record, then a replay run
+confirmed bit-identical $0 reproduction.
+
+**Exact commands run:**
+
+```bash
+uv run craw demo                                       # deterministic sanity → PASS (9/9, M2 steps present)
+rm -rf demo/triage-bot/.crawfish/cassettes && mkdir demo/triage-bot/.crawfish/cassettes
+uv run craw demo --live --model claude-haiku-4-5       # FRESH RECORD (real haiku) → prints FAIL
+uv run craw demo --live --model claude-haiku-4-5       # REPLAY → $0, bit-identical (still FAIL)
+```
+
+**Spend:** fresh-record total **`$3.7251`** (Refine loop `$0.1423`); replay total **`$0.00`**.
+**worst_case_usd = `$4.32` = budget (`$4.32`)** — hard-kill ceiling and honesty bound coincide;
+`total_spend $3.7251 ≤ worst_case $4.32` holds with `$0.59` headroom (budget respected, no
+`BudgetExceeded`).
+
+**Verdict: ⚠️ FAIL — 5 of 6 items ✅; item 2 (recurse bounded + folded) ❌ under the real model.**
+The fresh-record run printed `FAIL — 9/9` because the bounded recurse stopped on
+`max_depth` and folded `0 parts` instead of stopping on `base_case` at 3 levels folding 3
+parts. This is a **real harness defect** (not model flakiness — it reproduces bit-identically
+on replay), reported below. Do NOT mark M2 live-accepted until it is fixed and re-run.
+
+| # | M2 evidence item | result | proof |
+|---|------------------|--------|-------|
+| 1 | **Router branched correctly** | ✅ | `router branch: routed 6 tickets -> 3 branches {'billing': 2, 'bug': 2, 'feature': 2}` — every ticket landed on a STATIC branch chosen by its fluid type; `router_branches_hit == 3` (> 1, a real branch). The `how-to` default branch simply drew no ticket this seed set. |
+| 2 | **Recurse bounded + folded** | ❌ | `recurse (bounded): 4 levels -> max_depth (<= max_depth 4); folded 0 parts`. `recurse_stopped == "max_depth"`, `recurse_depth_reached == 4`, `recurse_parts_folded == 0`. The descent ran to the bound and folded NOTHING — the base case never fired. (Deterministic run correctly shows `3 levels -> base_case; folded 3 parts`.) **Defect — see below.** The bound itself IS load-bearing here (it stopped an otherwise-unbounded descent), but the healthy-path base-case fold the item requires did not happen. |
+| 3 | **$0 durable resume** | ✅ | `recurse resume ($0): committed levels replayed — resume spend=$0.00 ($0)`; `recurse_resume_spent_usd == 0.0`. (The resume replays the same — broken — descent, but re-pays nothing: the durability/$0 property holds.) |
+| 4 | **Budget respected** | ✅ | step 6 `worst=72 calls=$4.320 <= budget=$4.32`; fresh-record `total_spend $3.7251 ≤ worst_case $4.32`; hard-kill never tripped. (Note: the broken recurse spent on 4 levels rather than the intended 3 — still within bound.) |
+| 5 | **Tenant isolation** | ✅ | step 9 `tenant isolation: org-B gold cases=0 (cannot read org-A)`; `org_b_cases == 0`, `org_a_cases == 6`. |
+| 6 | **Bit-identical replay** | ✅ | the `--live` replay reproduced the fresh-record shas exactly: frozen `9dfc8be045b2`, loop fixed-point `950276dec417`, refine `f167c8f84f9b`, **recurse fold sha `228ed8ea5dc8`**. `refine_resume_spent_usd == recurse_resume_spent_usd == 0.0`. (The recurse sha is reproducible but is the sha of the *broken* 0-part fold.) |
+
+#### Defect found (recurse base-case never fires under a real model) — RESOLVED (CRA-208)
+
+**Resolution (two parts — framework + demo).**
+1. **Framework (CRA-208):** `recurse`'s base-case signature is now
+   `base_case(output, depth) -> bool`, where `depth` is the **engine-authoritative** 0-based
+   index of the level just produced — trusted state the harness owns, not a marker read from
+   the model's free-form Output. `test_recurse.py::
+   test_base_case_receives_authoritative_depth_sequence` covers it.
+2. **Demo (`self_improve.py`):** `_all_parts_answered` now stops on `depth + 1 >= parts`
+   using that authoritative `depth` (no longer reads `_recurse_depth` from the model Output),
+   AND `_fold_sub_answers` now counts parts by `len(children)` and folds each level's REAL
+   prose (`_sub_answer_text` accepts a `sub_answer`/`reply`/`answer`/`text` field or raw
+   text), so neither the stop nor the fold depends on a marker the real model won't emit. The
+   new `test_demo_composition.py::test_recurse_correct_under_marker_less_body` drives the
+   recurse with a plain-prose body and asserts it stops on `base_case` at `parts` levels and
+   folds `parts` real sub-answers — it fails against the old marker-only fold (`0 == 3`), so
+   it is load-bearing.
+
+The original symptom + root-cause analysis is retained below for the record.
+
+**Symptom (original).** Under real `claude -p`, the bounded recurse (step 9d) descended to
+`max_depth` (4 levels) and folded `0 parts`, so `DemoResult.passed()` was `False` (line
+185-187 require `recurse_parts_folded > 0` and `recurse_stopped in {"base_case","max_depth"}`
+AND a fold). The deterministic/mock path was correct (3 levels, base_case, 3 parts).
+
+**Root cause (original, now fixed)** — `demo/triage-bot/self_improve.py`:
+- The recurse base case `_all_parts_answered` previously fired when
+  `_recurse_depth_of(out.value) >= parts` (parts = 3) — reading depth from the model Output.
+- `_recurse_depth_of` (`self_improve.py:416-422`) reads the integer `_recurse_depth` marker
+  off the prior level's Output value, defaulting to `0` when absent.
+- In the **mock** body (`self_improve.py:263-266`) the sub-answerer returns the structured
+  `_sub_answer(depth)` dict `{"sub_answer": …, "_recurse_depth": depth}` (`self_improve.py:396`),
+  so the marker climbs 1→2→3 and the base case fires at level 3.
+- In the **live** path the body is the real model, which returns arbitrary prose (or JSON
+  that does NOT contain `_recurse_depth`). `_as_record` (`self_improve.py:399-413`) decodes it,
+  finds no `_recurse_depth` key, so `_recurse_depth_of` returns `0` at **every** level. The
+  computed depth never climbs past 1, `depth >= 3` is never true, and the descent runs to
+  `max_depth`, folding 0 parts.
+- The code comment at `self_improve.py:386-388` ("the live path produces real prose instead,
+  but the *shape* … is identical") encodes the faulty assumption: the real model has no
+  obligation to emit `_recurse_depth`, so the shape is NOT identical and the base-case
+  predicate cannot read the depth it relies on.
+
+**Why it's a true defect, not flakiness.** It reproduces bit-identically on replay
+(`recurse_stopped == "max_depth"`, sha `228ed8ea5dc8` both runs). Any real-model run will hit
+it, because the base case depends on a structured marker only the mock body emits.
+
+**Fix direction (for the owner — verifier does not patch source).** The descent depth must
+be derived from something the harness controls, not from the model's free-form Output —
+e.g. carry the level count via the recurse's own depth-variant coordinate / the
+`ExecutionLedger` depth-variant (which the durable-resume path already tracks per level),
+or have `Recurse` thread an authoritative depth into the base-case callback, rather than
+inferring it from `out.value`. `test_demo_composition.py` passes because it runs the mock
+body; it does **not** cover a body whose Output omits `_recurse_depth` — that gap is what let
+this reach the live gate. Recommend adding a composition test where the body returns prose
+without the marker, asserting the recurse still stops on `base_case`.
+
+> The **deterministic** path (`uv run craw demo`) still passes 9/9 and `test_demo_composition.py`
+> is green — the defect is specific to the real-model body's Output shape. Cassettes under
+> `.crawfish/` are gitignored local artifacts; delete them to force a fresh re-record after the fix.

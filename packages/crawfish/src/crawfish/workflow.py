@@ -722,8 +722,12 @@ class UnboundedRecursionError(ValueError):
     """
 
 
-# A pure base-case predicate over a frozen Output: descent stops when it holds.
-BaseCase = Callable[[Output[JSONValue]], bool]
+# A pure base-case predicate: descent stops when it holds. It receives the frozen Output
+# AND the **engine-authoritative** descent depth (the 0-based index of the level that just
+# produced the Output) — a trusted, deterministic counter the engine owns. The predicate
+# must never infer depth from the (stochastic, possibly marker-less) model Output: a body
+# need not echo any depth marker, so a depth decision read from fluid output is unsound.
+BaseCase = Callable[[Output[JSONValue], int], bool]
 # A combine/fold over the (descent-order) child Outputs → one value. Existing reducers
 # (``collect``/``count``/``dedupe``) satisfy this signature.
 Combine = Callable[[list[Output[JSONValue]], RunContext], JSONValue]
@@ -744,10 +748,17 @@ class Recurse(Node):
     Resolves the vision §5 open question: recursion is a :class:`Program` back-edge into
     the *same* Definition, pushing a frozen version onto a per-item depth stack. Reuses the
     C2 kernel; the only deltas are a **depth bound** (``max_depth``, assembly-required) and
-    a pure **base-case predicate**. Each descent ``derive()``s a fresh content sha (no
-    in-place mutation); the base case stops descent; ``combine`` folds the children in
-    descent (depth-first) order. The reduced Output is **tainted if ANY child input was
-    tainted** (taint = union; a vote/fold never launders taint).
+    a pure **base-case predicate** ``base_case(output, depth) -> bool``. Each descent
+    ``derive()``s a fresh content sha (no in-place mutation); the base case stops descent;
+    ``combine`` folds the children in descent (depth-first) order. The reduced Output is
+    **tainted if ANY child input was tainted** (taint = union; a vote/fold never launders
+    taint).
+
+    **Safety: depth is engine-authoritative.** ``base_case`` receives the trusted, 0-based
+    descent ``depth`` the engine owns (the index of the level that just produced
+    ``output``) — never a depth inferred from the stochastic model Output. A body need not
+    echo any depth marker, so a "how deep am I / am I done" decision read from fluid output
+    is unsound; termination decisions therefore run off trusted engine state.
 
     Halts on ``base_case`` / ``depth >= max_depth`` / budget / cancel / calibrated
     no-progress — never wall-clock. Each level checkpoints into the F-2 depth-variant
@@ -806,9 +817,10 @@ class Recurse(Node):
 
         Each level runs the body once, derives a fresh content-addressed Output (pushing
         the frozen version onto the per-item depth stack), and checkpoints it at the F-2
-        depth coordinate. Descent stops at ``base_case`` / ``max_depth`` / budget / cancel /
-        calibrated no-progress; ``combine`` then folds the descent-order children, unioning
-        their taint onto the reduced Output.
+        depth coordinate. Descent stops at ``base_case(output, depth)`` — fed the engine-
+        authoritative 0-based ``depth`` of the level just produced — / ``max_depth`` / budget
+        / cancel / calibrated no-progress; ``combine`` then folds the descent-order children,
+        unioning their taint onto the reduced Output.
         """
         item_lineage = seed.lineage or seed.id
         item_id = item_lineage
@@ -847,7 +859,10 @@ class Recurse(Node):
             if ledger is not None:
                 ledger.checkpoint_depth(loop_id, item_id, depth, output_content_sha(current))
 
-            if self.base_case(current):
+            # Termination uses the engine-authoritative ``depth`` (0-based index of the
+            # level that just produced ``current``), never a depth inferred from the
+            # stochastic Output — a trusted-state decision, not a fluid-output one.
+            if self.base_case(current, depth):
                 stopped = "base_case"
                 break
 
@@ -917,9 +932,11 @@ def recurse(
     """Construct a bounded, self-referential :class:`Recurse` over a frozen Definition.
 
     ``max_depth`` is mandatory (``None`` ⇒ :class:`UnboundedRecursionError` at construction
-    / assembly); ``base_case`` is a pure predicate that stops descent; ``combine`` folds the
-    descent-order children (an existing reducer like ``cw.collect`` works). The descent is
-    whole-tree budget-bounded and content-addressed (each level mints a fresh sha).
+    / assembly); ``base_case(output, depth) -> bool`` is a pure predicate that stops descent,
+    where ``depth`` is the **engine-authoritative** 0-based index of the level that produced
+    ``output`` (never inferred from the stochastic Output); ``combine`` folds the descent-
+    order children (an existing reducer like ``cw.collect`` works). The descent is whole-tree
+    budget-bounded and content-addressed (each level mints a fresh sha).
     """
     return Recurse(
         body,

@@ -64,7 +64,9 @@ class _Scripted(AgentRuntime):
         return result
 
 
-def _is_atomic(o: Output[JSONValue]) -> bool:
+def _is_atomic(o: Output[JSONValue], depth: int) -> bool:
+    # An output-marker base case (ignores the authoritative ``depth``): stops when the body
+    # echoes ``{"atomic": true}``.
     raw = o.value
     if isinstance(raw, str):
         raw = json.loads(raw)
@@ -108,6 +110,47 @@ async def test_never_base_case_halts_at_max_depth() -> None:
 def test_no_max_depth_raises_at_construction() -> None:
     with pytest.raises(UnboundedRecursionError):
         recurse(_body(), base_case=_is_atomic, max_depth=None, combine=collect)
+
+
+class _Constant(AgentRuntime):
+    """A body that returns a CONSTANT, marker-less Output — it never echoes any depth or
+    "atomic" signal. Proves a depth-based base_case must rely on engine state, not output."""
+
+    name = "constant"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def run(self, request: RunRequest, ctx: RunContext) -> RunResult:
+        self.calls += 1
+        ctx.cost_budget.charge(0.0)
+        text = json.dumps({"plan": "subtask"})  # no depth, no "atomic" marker
+        result = RunResult(
+            text=text,
+            model="constant",
+            cost_usd=0.0,
+            events=[RuntimeEvent(kind=EventKind.RESULT, text=text)],
+        )
+        self._emit_telemetry(ctx, result, self.name)
+        return result
+
+
+async def test_base_case_receives_authoritative_depth_sequence() -> None:
+    """base_case sees the engine-authoritative depth (0, 1, 2, …) regardless of the body
+    Output, and a depth-based stop fires even when the Output carries no depth marker."""
+    seen_depths: list[int] = []
+
+    def _stop_at_depth_2(o: Output[JSONValue], depth: int) -> bool:
+        seen_depths.append(depth)
+        return depth >= 2  # stop once the engine reports descent depth 2 (the 3rd level)
+
+    rt = _Constant()  # marker-less body — depth is unknowable from the Output
+    rec = recurse(_body(), base_case=_stop_at_depth_2, max_depth=10, combine=collect)
+    result = await rec.execute(_seed(), _ctx(), rt)
+    assert result.stopped == "base_case"
+    assert result.depth_reached == 3  # levels at depth 0, 1, 2 ran
+    assert rt.calls == 3
+    assert seen_depths == [0, 1, 2]  # authoritative, contiguous, engine-owned
 
 
 async def test_budget_hard_stops_and_spent_reflects_every_level() -> None:

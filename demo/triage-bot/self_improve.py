@@ -768,17 +768,33 @@ def _build_recurse_body() -> Definition:
     )
 
 
-def _fold_sub_answers(children: list[Output[JSONValue]], _ctx: RunContext) -> JSONValue:
-    """``combine`` reducer: fold the descent-order sub-answers into ONE reply.
+def _sub_answer_text(value: JSONValue) -> str:
+    """Pull the sub-answer prose out of ONE descent child, real-model or mock.
 
-    Pure fold over the frozen children (no model call). Taint is unioned by ``Recurse``
-    itself (a vote/fold never launders taint); this reducer only shapes the value."""
-    parts: list[str] = []
-    for child in children:
-        ans = _as_record(child.value).get("sub_answer")
-        if isinstance(ans, str) and ans:
-            parts.append(ans)
-    return {"reply": " ".join(parts), "_parts_folded": len(parts)}
+    The real model emits **plain prose** (a string, or a JSON object with no demo marker);
+    the mock emits ``{"sub_answer": ..., "_recurse_depth": ...}``. We accept all three: the
+    mock's ``sub_answer`` field if present, else the model's own ``reply``/``answer`` field,
+    else the raw text — so the fold never depends on a marker the real model won't emit."""
+    record = _as_record(value)
+    for key in ("sub_answer", "reply", "answer", "text"):
+        field_val = record.get(key)
+        if isinstance(field_val, str) and field_val.strip():
+            return field_val.strip()
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return json.dumps(value, sort_keys=True) if value not in ({}, None, "") else ""
+
+
+def _fold_sub_answers(children: list[Output[JSONValue]], _ctx: RunContext) -> JSONValue:
+    """``combine`` reducer: fold the descent-order child Outputs into ONE reply.
+
+    Pure fold over the frozen children (no model call). Folds the REAL descent-order
+    sub-answers — one per descent level — counting parts by ``len(children)`` (the
+    engine-produced level count), NOT by hunting for a structured marker the real model
+    won't emit. Taint is unioned by ``Recurse`` itself (a vote/fold never launders taint);
+    this reducer only shapes the value."""
+    parts = [_sub_answer_text(child.value) for child in children]
+    return {"reply": " ".join(p for p in parts if p), "_parts_folded": len(children)}
 
 
 def _build_recurse(parts: int) -> Recurse:
@@ -789,8 +805,13 @@ def _build_recurse(parts: int) -> Recurse:
     ``base_case`` stops descent once every part has a sub-answer, so a healthy run stops on
     ``base_case`` well within the bound. ``_fold_sub_answers`` folds the children."""
 
-    def _all_parts_answered(out: Output[JSONValue]) -> bool:
-        return _recurse_depth_of(out.value) >= parts
+    def _all_parts_answered(out: Output[JSONValue], depth: int) -> bool:
+        # Stop once one level has descended per part. ``depth`` is the ENGINE-AUTHORITATIVE
+        # 0-based index of the level just produced (trusted state), so after ``parts`` levels
+        # the completed depths are ``0..parts-1`` and ``depth + 1`` is the count descended.
+        # Deliberately NOT read from ``out`` — a sub-answerer need not echo a depth marker,
+        # so a depth read from fluid Output is unsound (it may never fire and fold 0 parts).
+        return depth + 1 >= parts
 
     return recurse(
         _build_recurse_body(),
