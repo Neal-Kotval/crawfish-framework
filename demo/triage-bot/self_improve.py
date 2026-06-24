@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from crawfish.core.context import CostBudget, RunContext
-from crawfish.core.types import Flow, JSONValue, Parameter
+from crawfish.core.types import Flow, JSONValue, Node, NodeKind, Parameter
 from crawfish.cost import CostEstimate, CostShape, compose_cost
 from crawfish.definition import Definition
 from crawfish.definition.types import AgentSpec, Coordination, TeamSpec
@@ -57,6 +57,7 @@ from crawfish.emission import CorrectionType, Provenance, emit_correction
 from crawfish.eval import EvalCase, GateDecision, GoldenSet, paired_gate, save_baseline
 from crawfish.experiment import k_from_alpha, tune_gate_split, winners_curse_shrink
 from crawfish.ledger import ExecutionLedger, compute_loop_id
+from crawfish.nodes import Classifier, Router
 from crawfish.output import Output, output_content_sha
 from crawfish.refine import ProduceFn, Refine, RefineResult, VerifierStop
 from crawfish.runtime import MockRuntime, RecordReplayRuntime
@@ -65,6 +66,7 @@ from crawfish.runtime.replay import ExecutionCoordinate
 from crawfish.runtime.replay import _key as _cassette_key
 from crawfish.store import SqliteStore
 from crawfish.verifier import GatedVerifier, Verifier
+from crawfish.workflow import Recurse, RecurseResult, recurse
 
 if TYPE_CHECKING:
     from crawfish.runtime.base import AgentRuntime
@@ -133,6 +135,16 @@ class DemoResult:
     refine_resume_spent_usd: float = -1.0  # -1 == not yet run; 0.0 == proven $0-resume
     refine_verifier_precision: float = 0.0
     refine_final_sha: str = ""
+    # --- Milestone-2 composition step (Router branch + bounded recurse) ---
+    #: label -> count of tickets that branched there (fluid-label routing; static branches).
+    router_routed: dict[str, int] = field(default_factory=dict)
+    router_branches_hit: int = 0  # how many distinct branches actually fired
+    recurse_depth_reached: int = 0  # bounded descent over the multi-part ticket
+    recurse_max_depth: int = 0  # the static depth bound the descent never exceeded
+    recurse_stopped: str = ""  # "base_case" | "max_depth" | ... (never wall-clock)
+    recurse_parts_folded: int = 0  # sub-answers folded into one reply
+    recurse_final_sha: str = ""  # content sha of the folded reply (replay-identical)
+    recurse_resume_spent_usd: float = -1.0  # -1 == not yet run; 0.0 == proven $0-resume
 
     def passed(self) -> bool:
         """The whole scenario's pass predicate (mirrors the test assertions).
@@ -164,6 +176,17 @@ class DemoResult:
             and self.refine_final_sha
             and self.refine_resume_spent_usd == 0.0
             and self.refine_spent_usd <= self.worst_case_usd
+            # Milestone-2: the Router routed every ticket to a static branch by its fluid
+            # type, hitting more than one branch (a real branch, not a passthrough); the
+            # bounded recurse stayed within its STATIC depth bound, folded its sub-answers,
+            # and a crash-resume re-charged exactly $0 — proven as a dollar delta.
+            and self.router_branches_hit > 1
+            and sum(self.router_routed.values()) > 0
+            and self.recurse_stopped in ("base_case", "max_depth")
+            and 0 < self.recurse_depth_reached <= self.recurse_max_depth
+            and self.recurse_parts_folded > 0
+            and self.recurse_final_sha
+            and self.recurse_resume_spent_usd == 0.0
         )
 
     def summary(self) -> str:
@@ -233,6 +256,15 @@ def _deterministic_responder(req: RunRequest) -> str:
         ticket = str(inputs.get("ticket_body", ""))
         return json.dumps(_draft_reply(ticket, iter_index), sort_keys=True)
 
+    # --- Milestone-2 recurse: the sub-answer body (role "sub-answerer"). --------
+    # Each descent level answers ONE part of a multi-part ticket. The prior level rides
+    # in as FLUID ``_recurse_prior`` (taint propagates, never an instruction); the depth
+    # marker climbs so distinct levels mint distinct content (and distinct cassettes).
+    if role == "sub-answerer":
+        prior = inputs.get("_recurse_prior", {})
+        depth = _recurse_depth_of(prior) + 1
+        return json.dumps(_sub_answer(depth), sort_keys=True)
+
     # --- the original triage classification body. ------------------------------
     ticket = str(inputs.get("ticket_body", ""))
     expected = str(inputs.get("_expected", "unknown"))
@@ -261,6 +293,16 @@ _REFINE_CALLS_PER_ITER = 2
 # The hand-rolled step-9 loop's iteration ceiling (a plain bounded ``for`` over visits).
 _STEP9_LOOP_BOUND = 4
 
+# --- Milestone-2 composition bounds (Router branch + bounded recurse). -----------
+# The Router (step 9c) classifies each ticket with a PURE predicate classifier (zero model
+# calls — the fluid label only SELECTS a static branch) and dispatches it down ONE branch
+# handler, which runs the frozen triage agent once: so at most ``n_cases`` metered branch
+# calls. The classify step itself is free.
+#: The bounded recurse's hard depth ceiling (step 9d). ONE authoritative constant: both the
+#: cost model and ``_run_recurse_step`` read it, so the F-6 bound can never drift from the
+#: depth the descent actually enforces. A multi-part ticket descends one level per part.
+RECURSE_MAX_DEPTH = 4
+
 # Any single triage turn may spawn at most ONE schema-repair re-prompt (``Run._repair``),
 # so the worst case for a "logical" call is two metered model calls. Folding this 2×
 # into the worst-case call count is what makes the bound a TRUE upper bound on real
@@ -280,15 +322,22 @@ def _worst_case_calls(*, n_cases: int, n_tune: int, n_gate: int, n_candidates: i
     * **Step 9** — the hand-rolled bounded loop runs at most ``_STEP9_LOOP_BOUND`` visits.
     * **Step 9r (Refine)** — at most ``REFINE_MAX_ITERS`` iterations, each costing a body
       draft AND the gated verifier's critic call (``_REFINE_CALLS_PER_ITER``).
+    * **Step 9c (Router branch)** — at most one metered branch-handler call per ticket
+      (``n_cases``); the pure predicate classify is free (zero model calls — the fluid
+      label only selects a static branch).
+    * **Step 9d (bounded recurse)** — at most ``RECURSE_MAX_DEPTH`` body calls (one per
+      descent level; the pure base-case predicate and the fold are free).
 
     Each of those is a *logical* turn that may spawn one schema-repair re-prompt, so the
     whole sum is multiplied by ``_REPAIR_FACTOR`` to bound the real (multi-turn) live
-    spend. (The ``$0``-resume re-runs of steps 9 / 9r add nothing — they replay at $0.)
+    spend. (The ``$0``-resume re-runs of steps 9 / 9r / 9d add nothing — they replay at $0.)
     """
     step7 = n_candidates * n_tune + 2 * n_gate
     step9 = _STEP9_LOOP_BOUND
     step9r = REFINE_MAX_ITERS * _REFINE_CALLS_PER_ITER
-    return (step7 + step9 + step9r) * _REPAIR_FACTOR
+    step9c = n_cases  # Router: one branch-handler call per routed ticket
+    step9d = RECURSE_MAX_DEPTH  # recurse: one body call per descent level
+    return (step7 + step9 + step9r + step9c + step9d) * _REPAIR_FACTOR
 
 
 def _draft_reply(ticket: str, iter_index: int) -> dict[str, JSONValue]:
@@ -316,6 +365,61 @@ def _draft_iter_of(draft: JSONValue) -> int:
         except (TypeError, ValueError):
             return 0
     return 0
+
+
+# --- Milestone-2: a multi-part ticket the bounded recurse splits & folds. --------
+# A single customer ticket that bundles THREE distinct asks. The recurse descends one
+# level per part (depth-guarded by RECURSE_MAX_DEPTH), answering each, then folds the
+# descent-order sub-answers into one reply. The part count drives the base case, so the
+# descent stops on ``base_case`` (all parts answered) well within the static depth bound.
+_MULTI_PART_TICKET = (
+    "Three things: (1) my login is broken, "
+    "(2) invoice #4471 double-charged me, and "
+    "(3) can you add an SSO option?"
+)
+_MULTI_PART_COUNT = 3  # the number of distinct asks the recurse folds (drives base_case)
+
+
+def _sub_answer(depth: int) -> dict[str, JSONValue]:
+    """A deterministic 'sub-answer' for the ``depth``-th part of the multi-part ticket.
+
+    Pure and reproducible; the live path produces real prose instead, but the *shape* (a
+    sub-answer + a depth marker) is identical. The marker climbs with depth so each level
+    mints a distinct content sha — the property that salts per-level cassettes (CRA-206:
+    a guarded loop's feedback input already distinguishes visits, no coordinate needed)."""
+    answers = [
+        "On the login outage: we've reproduced it and a fix is rolling out.",
+        "On invoice #4471: the duplicate charge is refunded; expect it in 3-5 days.",
+        "On SSO: it's on the roadmap; we'll follow up with a timeline.",
+    ]
+    idx = min(depth - 1, len(answers) - 1)
+    return {"sub_answer": answers[idx], "_recurse_depth": depth}
+
+
+def _as_record(value: JSONValue) -> dict[str, JSONValue]:
+    """Coerce a recurse Output value to a dict.
+
+    The recurse body skips output-schema validation, so its Output value is the model's
+    raw JSON **text** (a string), not a parsed dict. We decode it here so the base-case
+    predicate and the fold read structured fields off every level (and the seed dict)."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (ValueError, TypeError):
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+    return {}
+
+
+def _recurse_depth_of(prior: JSONValue) -> int:
+    """Read the depth marker off a prior recurse Output value (seed default 0)."""
+    record = _as_record(prior)
+    try:
+        return int(record.get("_recurse_depth", 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 # Each real (non-replay) live call charges the budget TWICE: the demo's synthetic
@@ -568,6 +672,133 @@ def _build_drafter_body() -> Definition:
             coordination=Coordination.SINGLE,
             lead="drafter",
         ),
+    )
+
+
+# ----------------------------------------------------------- Milestone-2: compose
+#: Distinct back-edge id for the bounded recurse over the multi-part ticket (≠ EDGE_IDs).
+RECURSE_EDGE_ID = "self-improve:multipart-recurse"
+
+#: The static, closed branch-label set the Router dispatches over. These are STATIC
+#: control labels (assembly-fixed), NOT fluid data — a fluid ticket can only SELECT among
+#: them, never synthesize a new target (the security spine's fluid-label invariant).
+_ROUTER_LABELS = ("bug", "billing", "feature", "how-to")
+
+
+def _build_router() -> Router:
+    """A runnable :class:`Router` (``branch()``-style) that routes tickets by TYPE.
+
+    The classifier is a **pure predicate** classifier (zero model calls): it inspects the
+    ticket text as FLUID data and emits one closed-set label. The label is a control signal
+    that gates *which* static branch fires — it never becomes a consequential target. The
+    branch set is closed and total at construction (an uncovered label would raise
+    ``UnroutableLabelError``); ``how-to`` is the default dead-letter branch.
+
+    Each branch is a tiny tag node (a callable handler dispatched in ``_route_tickets``),
+    so a branch keeps the identical budget/taint/checkpoint guarantees of the step it runs.
+    """
+
+    def _is_bug(value: JSONValue) -> bool:
+        text = _ticket_text(value)
+        return any(w in text for w in ("broken", "404", "error", "crash", "login"))
+
+    def _is_billing(value: JSONValue) -> bool:
+        text = _ticket_text(value)
+        return any(w in text for w in ("invoice", "charge", "refund", "card", "billing"))
+
+    def _is_feature(value: JSONValue) -> bool:
+        text = _ticket_text(value)
+        return any(w in text for w in ("add ", "sso", "export", "please add", "feature"))
+
+    classifier = Classifier.from_predicates(
+        {"bug": _is_bug, "billing": _is_billing, "feature": _is_feature},
+        default="how-to",  # the dead-letter branch for anything uncovered
+        name="ticket-type",
+    )
+    # Each branch is a distinct handler tag; the real per-branch work (a metered triage
+    # call) runs in ``_route_tickets`` so spend meters into the SHARED budget. We use plain
+    # tag Nodes here purely to satisfy the Router's totality/assembly contract.
+    branches: dict[str, Node] = {label: _BranchTag(label) for label in _ROUTER_LABELS}
+    return Router(branches, classifier, name="triage-router")
+
+
+def _ticket_text(value: JSONValue) -> str:
+    """Pull the (fluid) ticket text out of an Output value for predicate routing."""
+    if isinstance(value, dict):
+        return str(value.get("ticket_body", value.get("summary", ""))).lower()
+    return str(value).lower()
+
+
+class _BranchTag(Node):
+    """A minimal branch :class:`~crawfish.core.types.Node` tag.
+
+    The Router only needs each branch to be a Node it can dispatch to; the demo runs the
+    real (metered) per-branch work itself in ``_route_tickets`` so it stays inside the one
+    shared ``CostBudget``. This tag just names the branch for the assembly/totality check."""
+
+    def __init__(self, label: str) -> None:
+        self.label = label
+        self.id = f"branch:{label}"
+        self.name = f"branch-{label}"
+        self.kind = NodeKind.FILTER  # a passthrough-shaped branch tag
+
+
+def _build_recurse_body() -> Definition:
+    """The bounded-recurse **body**: a single-agent multi-part sub-answerer.
+
+    Declares the static FLUID ``_recurse_prior`` slot so the prior descent level arrives as
+    data (taint propagates, never an instruction). Each level answers one part of the
+    multi-part ticket; ``recurse`` derives a fresh content-addressed Output per level."""
+    return Definition(
+        id="multipart-subanswerer",
+        inputs=[
+            Parameter(name="ticket_body", type="str", required=False, flow=Flow.FLUID),
+            Parameter(name="_recurse_prior", type="str", required=False, flow=Flow.FLUID),
+        ],
+        team=TeamSpec(
+            agents=[
+                AgentSpec(
+                    role="sub-answerer",
+                    prompt="Answer the next unanswered part of the customer's multi-part ticket.",
+                )
+            ],
+            coordination=Coordination.SINGLE,
+            lead="sub-answerer",
+        ),
+    )
+
+
+def _fold_sub_answers(children: list[Output[JSONValue]], _ctx: RunContext) -> JSONValue:
+    """``combine`` reducer: fold the descent-order sub-answers into ONE reply.
+
+    Pure fold over the frozen children (no model call). Taint is unioned by ``Recurse``
+    itself (a vote/fold never launders taint); this reducer only shapes the value."""
+    parts: list[str] = []
+    for child in children:
+        ans = _as_record(child.value).get("sub_answer")
+        if isinstance(ans, str) and ans:
+            parts.append(ans)
+    return {"reply": " ".join(parts), "_parts_folded": len(parts)}
+
+
+def _build_recurse(parts: int) -> Recurse:
+    """Construct the bounded recurse: descend one level per ticket part, then fold.
+
+    ``max_depth`` (``RECURSE_MAX_DEPTH``) is the STATIC, assembly-required bound the descent
+    can never exceed (a ``None`` bound would raise ``UnboundedRecursionError``); the pure
+    ``base_case`` stops descent once every part has a sub-answer, so a healthy run stops on
+    ``base_case`` well within the bound. ``_fold_sub_answers`` folds the children."""
+
+    def _all_parts_answered(out: Output[JSONValue]) -> bool:
+        return _recurse_depth_of(out.value) >= parts
+
+    return recurse(
+        _build_recurse_body(),
+        base_case=_all_parts_answered,
+        max_depth=RECURSE_MAX_DEPTH,
+        combine=_fold_sub_answers,
+        edge_id=RECURSE_EDGE_ID,
+        name="multipart-recurse",
     )
 
 
@@ -880,6 +1111,15 @@ def run_self_improvement(
     # (built on raw F primitives) used to be the only option.
     _run_refine_step(backend, res, store, ctx, org_id=org_id)
 
+    # --- 9c/9d. Milestone-2: COMPOSITION — Router branch + bounded recurse. ----
+    # The composition surface stands up: a runnable Router routes each ticket by its
+    # (fluid) type down ONE static branch, and a multi-part ticket is split and handled
+    # by a depth-guarded recurse that folds its sub-answers into one reply. Both run inside
+    # the SAME shared CostBudget; the recurse checkpoints each descent level so a mid-
+    # recursion crash resumes at $0. The fluid label/feedback is data; the branch set and
+    # the depth bound are static.
+    _run_composition_step(backend, res, defn, ctx, store, org_id=org_id)
+
     # --- cross-tenant isolation: org B sees NONE of org A's corpus (security). -
     res.org_b_cases = len(GoldenSet.from_corrections(store, org_id="other-org").cases())
     res.steps.append(
@@ -892,6 +1132,112 @@ def run_self_improvement(
 
     store.close()
     return res
+
+
+def _run_composition_step(
+    backend: Backend,
+    res: DemoResult,
+    defn: Definition,
+    ctx: RunContext,
+    store: Store,
+    *,
+    org_id: str,
+) -> None:
+    """Run the Milestone-2 composition step: a runnable Router + a bounded recurse.
+
+    **Router (9c).** Builds a :class:`Router` (``branch()``-style) with a PURE predicate
+    classifier and dispatches every seed ticket down its matching static branch. The
+    classify is free (no model call — the fluid label only selects a branch); the per-
+    branch work is one metered triage call into the SHARED budget, so branch spend is real.
+    A tainted ticket keeps its taint across the branch boundary (the route does not launder
+    it). At least two distinct branches must fire (bug + billing + feature), proving the
+    Router actually branches rather than passing everything through one arm.
+
+    **Recurse (9d).** Splits a multi-part ticket and runs a depth-guarded :func:`recurse`
+    over a frozen body: one descent level per part, folding the descent-order sub-answers
+    into one reply. ``max_depth`` is the STATIC bound the descent never exceeds; the pure
+    base case stops it once every part is answered. Each level checkpoints to the F-2
+    ledger, so a second ``resume=True`` pass replays every committed level at **$0** — the
+    durable back-edge resume proof, asserted bit-identically by content sha.
+    """
+    import asyncio
+
+    # --- 9c. Router branch: route each ticket by its (fluid) type. ---
+    router = _build_router()
+    routed: dict[str, int] = {}
+    for ticket, expected in _SEED_TICKETS:
+        probe: Output[JSONValue] = Output(
+            value={"ticket_body": ticket},
+            produced_by="router-probe",
+            lineage=ticket,
+            output_schema=[],
+            tainted=True,  # the ticket text is FLUID/untrusted — taint rides the branch
+        )
+        label, _branch = router.route(probe)  # pure classify -> (label, static branch)
+        routed[label] = routed.get(label, 0) + 1
+        # The per-branch work: one metered triage call through the SAME backend/budget. A
+        # branch keeps the identical budget/taint/checkpoint guarantee of the step it runs.
+        _ = _triage(backend, defn, ctx, ticket, expected, res.promoted_temperature)
+    res.router_routed = routed
+    res.router_branches_hit = sum(1 for c in routed.values() if c > 0)
+    res.steps.append(
+        StepResult(
+            9,
+            "router branch",
+            f"routed {sum(routed.values())} tickets -> {res.router_branches_hit} branches "
+            f"{ {k: v for k, v in sorted(routed.items())} } (fluid label -> static branch)",
+        )
+    )
+
+    # --- 9d. Bounded recurse over a multi-part ticket (durable back-edge). ---
+    rec = _build_recurse(_MULTI_PART_COUNT)
+    res.recurse_max_depth = RECURSE_MAX_DEPTH
+    ledger = ExecutionLedger(store, org_id=org_id)
+    seed: Output[JSONValue] = Output(
+        value={"ticket_body": _MULTI_PART_TICKET, "_recurse_depth": 0},
+        produced_by="recurse-seed",
+        lineage=_MULTI_PART_TICKET,
+        output_schema=[],
+    )
+    first: RecurseResult = asyncio.run(
+        rec.execute(seed, ctx, backend.runtime, ledger=ledger, resume=False)
+    )
+    res.recurse_depth_reached = first.depth_reached
+    res.recurse_stopped = first.stopped
+    folded = first.output.value
+    res.recurse_parts_folded = (
+        int(folded.get("_parts_folded", 0)) if isinstance(folded, dict) else 0
+    )
+    res.recurse_final_sha = output_content_sha(first.output)
+    res.steps.append(
+        StepResult(
+            9,
+            "recurse (bounded)",
+            f"{first.depth_reached} levels -> {first.stopped} "
+            f"(<= max_depth {RECURSE_MAX_DEPTH}); folded {res.recurse_parts_folded} parts, "
+            f"sha {res.recurse_final_sha[:12]}",
+        )
+    )
+
+    # --- 9d-resume: re-run the SAME recurse, resume=True -> replays at $0. ---
+    spent_before = ctx.cost_budget.spent_usd
+    resumed: RecurseResult = asyncio.run(
+        rec.execute(seed, ctx, backend.runtime, ledger=ledger, resume=True)
+    )
+    res.recurse_resume_spent_usd = ctx.cost_budget.spent_usd - spent_before
+    res.total_spend_usd = ctx.cost_budget.spent_usd
+    # The resumed run reproduces the folded reply bit-for-bit (content-sha verified).
+    assert output_content_sha(resumed.output) == res.recurse_final_sha, (
+        "recurse resume must reproduce the folded reply bit-identically"
+    )
+    res.steps.append(
+        StepResult(
+            9,
+            "recurse resume ($0)",
+            f"committed levels replayed — resume spend=${res.recurse_resume_spent_usd:.2f} ($0), "
+            f"sha matches uninterrupted run",
+        )
+    )
 
 
 def _run_refine_step(

@@ -23,6 +23,8 @@ the verifier-gated **`Refine`** operator (CL-1/CL-2/CL-4) — in one scenario:
 | 8 | `freeze()` the winner → new `Version.sha` | F-5 | `Definition.freeze` |
 | 9 | bounded refine loop; checkpoint each visit; stop on fixed point | F-0/F-1/F-2 | `output_content_sha`, `ExecutionCoordinate`, `ExecutionLedger` |
 | 9r | **M1:** verifier-gated `Refine` — draft a reply, a gated `Verifier` judges it, iterate until accept or bound; checkpoint each draft; resume at `$0` | CL-1/CL-2/CL-4 | `Refine`, `VerifierStop`, `GatedVerifier`, `ExecutionLedger` |
+| 9c | **M2:** runnable `Router` — route each ticket by its (fluid) type down ONE static branch; the label only *selects*, never synthesises, a target | C1 | `branch()`, `Router`, `Classifier.from_predicates` |
+| 9d | **M2:** bounded `recurse` — split a multi-part ticket, descend one level per part (depth-guarded), fold the sub-answers; checkpoint each level; resume at `$0` | C2b/C3 | `recurse`, `Recurse`, `ExecutionLedger` (depth-variant) |
 | 10 | fire the Sink — permitted **only** because the definition is frozen | security spine | static/frozen-only sink |
 
 ## Deterministic run (CI / no credentials, $0)
@@ -73,7 +75,7 @@ The default budget is auto-sized to the chosen model: it **equals the F-6 worst 
 (the max metered-call count across all steps × the per-call price × a small headroom).
 Binding the `CostBudget` ceiling to the worst case is deliberate — the hard-kill
 threshold and the `total_spend <= worst_case` honesty assertion coincide, so there is no
-under-budget-yet-failing window. On haiku that ceiling is **`$3.12`** (see the cost note).
+under-budget-yet-failing window. On haiku that ceiling is **`$4.32`** (see the cost note).
 
 ### Expected output
 
@@ -90,14 +92,16 @@ model call). If a live call would cross the ceiling the budget hard-kills the ru
 (`BudgetExceeded`) rather than overspending.
 
 The **worst case is structural** (`_worst_case_calls` in `self_improve.py`): the max
-metered calls across the step-7 tune+gate sweep (`2 candidates × 3 tune + 2 × 3 gate`),
-the step-9 bounded loop (`4`), and the step-9r **Refine** fan-out (`5 iters × 2` — a body
-draft AND the gated verifier's critic call per iteration), each `× 2` for an optional
-schema-repair turn = **52 calls**. At haiku `$0.05/call × 1.2` headroom (to absorb the
-runtime's own real `cost_usd` on top of the synthetic per-call charge) that is a
-**`$3.12`** ceiling. A real fresh-record run lands at **~49 calls ≈ `$2.46`** — well under
-the bound; every subsequent run replays at `$0`. (The earlier `~14 calls ≈ $0.70` estimate
-predated the Refine step and undercounted the repair/critic fan-out.)
+metered calls across the step-7 tune+gate sweep (`2 candidates × 3 tune + 2 × 3 gate` =
+`12`), the step-9 bounded loop (`4`), the step-9r **Refine** fan-out (`5 iters × 2` — a
+body draft AND the gated verifier's critic call per iteration = `10`), the step-9c
+**Router** branch (`6` — one metered branch-handler call per ticket; the pure predicate
+classify is free), and the step-9d **recurse** (`4` — one body call per descent level,
+its bound `RECURSE_MAX_DEPTH`), summing to `36`, each `× 2` for an optional schema-repair
+turn = **72 calls**. At haiku `$0.05/call × 1.2` headroom (to absorb the runtime's own
+real `cost_usd` on top of the synthetic per-call charge) that is a **`$4.32`** ceiling. A
+real fresh-record run lands well under the bound; every subsequent run replays at `$0`.
+(The earlier `52 calls ≈ $3.12` figure predated the M2 Router/recurse step.)
 
 ## Evidence checklist (verifier fills this in)
 
@@ -305,3 +309,69 @@ later fresh record with fewer drafts passed.)
 Observed live spend (~`$2.46`, ≈49 calls) now sits comfortably under the `$3.12` bound with
 margin, so real-model variance cannot exceed it. The deterministic `craw demo` (mock, `$0`)
 and `test_demo_refine.py` / `test_demo_self_improve.py` are green.
+
+> **Superseded by Milestone 2:** the M2 Router (`+6`) and recurse (`+4`) steps raised the
+> structural worst case to **72 calls = `$4.32`** on haiku. The honesty mechanism is
+> unchanged (the budget is still bound to `worst_case_usd`); only the count grew. See the
+> **Milestone 2 live evidence** section below.
+
+## Milestone 2 live evidence — composition surface (Router branch + bounded recurse)
+
+Milestone 2 stood up the **composition surface** (CRA-205..208): a runnable `Router`
+(`branch()`), a cyclic-capable `Program` with a durable per-iteration ledger, and a
+bounded `recurse()`. The cumulative scenario now contains a real composition step (printed
+as the four `router branch` / `recurse (bounded)` / `recurse resume ($0)` lines under
+step 9):
+
+- **Router (9c).** A runnable `Router` built from a **pure predicate** `Classifier`
+  routes every seed ticket by its TYPE down one **static** branch — `bug`, `billing`,
+  `feature`, or the `how-to` default. The fluid ticket text is read as DATA only; the
+  label it produces is a *control signal* that selects which pre-declared branch fires —
+  it never becomes a consequential target or an idempotency key. The branch set is closed
+  and total at construction (`UnroutableLabelError` otherwise). The classify is free (no
+  model call); each branch runs one metered triage call into the **shared** `CostBudget`.
+- **Recurse (9d).** A multi-part ticket (three asks: a bug, a billing dispute, a feature
+  request) is split and handled by a depth-guarded `recurse()` over a frozen body: it
+  descends **one level per part**, answers each, and folds the descent-order sub-answers
+  into one reply. `max_depth` (`RECURSE_MAX_DEPTH = 4`) is the STATIC, assembly-required
+  bound the descent never exceeds (`UnboundedRecursionError` if `None`); the pure base
+  case stops descent once every part is answered, so a healthy run stops on **`base_case`**
+  (3 levels), not the bound. Each level checkpoints to the F-2 depth-variant ledger, so a
+  mid-recursion crash resumes at **`$0`**.
+
+In the scenario the recurse stops on a **base-case** (`recurse_stopped == "base_case"`),
+3 levels in, well under the depth bound — the case that proves the base case (not the
+bound) halts a healthy run, while `test_demo_composition.py` proves the bound is still
+load-bearing when the base case never fires.
+
+### Exact command for the M2 live gate
+
+```bash
+claude -p "say ok"                                  # confirm auth
+uv run craw demo --live --model claude-haiku-4-5    # real haiku; records cassettes
+uv run craw demo --live --model claude-haiku-4-5    # re-run: replays, spend $0
+```
+
+### Evidence checklist (verifier fills this in)
+
+Run the command above and confirm, on the `router branch` / `recurse` lines under step 9:
+
+- [ ] **Router branched correctly** — `router branch` prints `routed 6 tickets -> 3
+  branches {'billing': 2, 'bug': 2, 'feature': 2}`: every ticket landed on a STATIC branch
+  chosen by its fluid type, and more than one branch fired (a real branch, not a
+  passthrough).
+- [ ] **Recurse bounded + folded** — `recurse (bounded)` prints `3 levels -> base_case
+  (<= max_depth 4); folded 3 parts`: the descent stopped on the base case strictly within
+  the static depth bound and folded every sub-answer into one reply.
+- [ ] **`$0` durable resume** — `recurse resume ($0)` prints `resume spend=$0.00 ($0)`: a
+  resume over the same depth-variant ledger replayed every committed level at zero cost.
+- [ ] **Budget respected** — the Router branch calls + recurse levels meter into the
+  **shared** `CostBudget`; the scenario worst-case (step 6, now `72 calls = $4.32` on
+  haiku) still bounds total spend, and the run did not hit `BudgetExceeded`.
+- [ ] **Bit-identical replay** — the resumed recurse reproduces the folded reply's
+  `output_content_sha` bit-for-bit (asserted in-scenario; `sha matches uninterrupted
+  run`), and two `--live` runs print the same `recurse` sha.
+
+The deterministic path (`uv run craw demo`, `$0`) exercises every one of these off the
+mock runtime; the acceptance test is
+`packages/crawfish/tests/test_demo_composition.py` (12 tests, no live calls).
