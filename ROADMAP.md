@@ -42,14 +42,16 @@ crash-resume. What's in the box today:
   `craw build` → container; a MkDocs docs site; an API-stability contract (stable /
   experimental / deprecated tiers + semver).
 
-## The agent language — control plane, composition surface, tunable-ML library, tameness layer + operator surface shipped (in progress)
+## The agent language — control plane, composition surface, tunable-ML library, tameness layer, operator surface + variables-and-knowledge shipped (in progress)
 
 Phase 2 includes a larger bet: an **agent language** where composition operators
 (Refine, Program, Quorum, Escalate) and a Tuner make agents self-improving over your
-data. The first five milestones — the **control plane**, the **composition surface**, the
+data. The first six milestones — the **control plane**, the **composition surface**, the
 flagship **tunable-ML library**, the **tameness layer** that bounds the one stochastic
-primitive, and the **operator surface** that makes the whole optimization plane drivable from
-the shell — have now shipped on top of the foundational primitives:
+primitive, the **operator surface** that makes the whole optimization plane drivable from
+the shell, and the **variables-and-knowledge** layer that makes an agent a content-addressed,
+composable, named **variable** (git for agents) with knowledge **summoned** by reference —
+have now shipped on top of the foundational primitives:
 
 - **`Refine` — a bounded, metered, durable iterate-until-goal loop.** Run a producing
   Definition, check each frozen Output against an *external* stop condition, and iterate
@@ -115,12 +117,29 @@ the shell — have now shipped on top of the foundational primitives:
   pins a Definition's summoned transitive closure to exact `(version, sha256)`; reading a
   lockfile is data-only and **fails closed** on drift or tampering (`craw lock --check` is the
   CI gate), so an un-versioned mutation cannot enter a frozen closure.
+- **Variables & knowledge — an agent is a content-addressed, composable, named variable.**
+  This is *git for agents*. **Copy-on-write composition** (`with_skill` / `with_agent` /
+  `with_context` / `with_inputs` / `with_policy`) derives a **new frozen** Definition from a
+  base on a single content-hash path — the receiver is never mutated, identical compositions
+  collapse to one sha, and a skill or summon enters by **reference, not embed** (so the
+  export checksum tracks the pin). **A name registry** (`DefinitionStore`) makes a name a
+  **mutable pointer** over an **append-only, content-addressed object store**: `save` moves
+  the pointer and appends a lineage event (frozen-only), `recall` is pure and never mints a
+  sha, and `modify` / `reset` are the commit/checkout verbs (`reset` is a pure pointer move
+  that refuses an unreachable sha). **Summonable knowledge** (`Wiki`) is a versioned,
+  Merkle-hashed unit you pin by sha and `consult()` as **tainted** context — knowledge
+  reaches the model as **data, never instructions** — with a per-page `TrustTier` that only
+  ever raises suspicion. The retrieval half (`Rag`) ships as a **seam only**, locking in
+  scrubbed embeddings and tainted, trust-tier-carrying hits. Only sealed, eval-mode values
+  touch the world: `save` requires a frozen Definition, and `Wiki.mutable()` is rejected in
+  eval mode.
 
 See the [Refine & verify guide](docs/guide/refine-and-verify.md), the
 [Compose guide](docs/guide/compose.md), the
 [Train, calibrate & promote guide](docs/guide/train-and-tune.md), the
 [Taming stochasticity guide](docs/guide/tameness.md), the
 [Drive the language from the CLI guide](docs/guide/optimize-from-the-cli.md), the
+[Agents as variables guide](docs/guide/variables-and-knowledge.md), the
 [CLI reference](docs/guide/cli.md), the
 [control-plane reference](docs/reference/refine-and-verify.md), the
 [Tuner & learning reference](docs/reference/tuner-and-learning.md), and the

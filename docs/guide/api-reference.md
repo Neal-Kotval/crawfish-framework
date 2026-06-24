@@ -4,7 +4,7 @@
 > Do not edit by hand — regenerate on each release:
 > `uv run python docs/guide/gen_api_reference.py > docs/guide/api-reference.md`.
 
-`crawfish` version: `0.2.0` — 423 public symbols.
+`crawfish` version: `0.2.0` — 443 public symbols.
 
 Everything documented here is importable directly from the top-level package:
 
@@ -439,6 +439,26 @@ from crawfish import Definition, Batch, MockRuntime  # etc.
 | `read_lockfile` | function | Parse canonical lockfile JSON back into a :class:`Lockfile` — **data only**. |
 | `write_lockfile` | function | Serialize a lockfile to its canonical JSON text (deterministic, committable). |
 | `LOCKFILE_VERSION` | value | int([x]) -> integer |
+| `with_skill` | function | Copy-on-write: return a **new frozen** Definition that acquires ``skill`` (a version pin). |
+| `with_context` | function | Copy-on-write: return a **new frozen** Definition that summons ``obj`` as pinned context. |
+| `with_agent` | function | Copy-on-write: return a **new frozen** Definition with ``agent`` added to the team. |
+| `SkillRef` | class | A versioned pin to a skill the Definition acquires (``with_skill``). |
+| `SummonRef` | class | A pinned, reference-only handle to a summoned context unit (``with_context``). |
+| `SummonMode` | enum | How a summoned context unit is carried into a Definition. |
+| `Summonable` | class | A unit that can be summoned into a Definition as pinned, read-only context. |
+| `Wiki` | class | A versioned, summonable, narrowable knowledge unit. Freezable. |
+| `WikiPage` | class | One typed page of a :class:`Wiki`. Frozen; taint + trust tier propagate. |
+| `TrustTier` | enum | Source provenance / trust tier of a knowledge page (gap S6). |
+| `RagSeam` | class | The deferred retrieval contract (CRA-227 — ``Rag`` half, NOT implemented). |
+| `RagDeferred` | class | Raised by the deferred :class:`RagSeam` surface — retrieval is a follow-on. |
+| `WIKI_RECORD_KIND` | value | str(object='') -> str |
+| `DefinitionStore` | class | A Store-backed, append-only, org-scoped name→hash registry for Definitions. |
+| `DefinitionVersion` | class | One append-only point in a name's version log — the lineage edge (CRA-225). |
+| `modify` | function | Git-style branch-local edit: ``recall → fn → save(parent=old_sha)``. Returns new sha. |
+| `reset` | function | Git checkout: move the name pointer back to a prior recorded ``to`` sha. Returns it. |
+| `UnfrozenDefinitionError` | class | ``save`` was handed a Definition that is not frozen (eval-mode). |
+| `UnknownNameError` | class | ``recall`` / ``log`` / ``modify`` / ``reset`` referenced a name with no pointer. |
+| `UnreachableShaError` | class | ``reset`` was asked to move a name to a sha that is not in that name's log. |
 
 ### `JSONValue`
 
@@ -657,7 +677,7 @@ TypeRegistry() -> 'None'
 
 *value* — `TypeRegistry`
 
-`default_registry = <crawfish.typesystem.registry.TypeRegistry object at 0x108ac4c50>`
+`default_registry = <crawfish.typesystem.registry.TypeRegistry object at 0x1092b4f50>`
 
 ### `Version`
 
@@ -2422,7 +2442,7 @@ Stop then re-deploy ``name`` with its recorded dir + schedule. Returns success.
 Watch one pipeline: run rules (and an optional LLM judge) on a poll interval.
 
 ```python
-Observer(watch: 'str', *, poll: 'str | CronSchedule | None' = None, rules: 'Sequence[Rule]' = (), judge: 'Definition | None' = None, judge_runtime: 'AgentRuntime | None' = None, judge_cost_cap_usd: 'float' = 0.5, judge_flag: 'JudgeFlagFn' = <function _default_judge_flag at 0x108deb240>, org_id: 'str' = 'local', lookback: 'str' = '-24h') -> 'None'
+Observer(watch: 'str', *, poll: 'str | CronSchedule | None' = None, rules: 'Sequence[Rule]' = (), judge: 'Definition | None' = None, judge_runtime: 'AgentRuntime | None' = None, judge_cost_cap_usd: 'float' = 0.5, judge_flag: 'JudgeFlagFn' = <function _default_judge_flag at 0x109632660>, org_id: 'str' = 'local', lookback: 'str' = '-24h') -> 'None'
 ```
 
 **Methods**
@@ -4669,7 +4689,7 @@ clean unprivileged primitive and is deferred (ADR 0009) → :class:`UnsupportedP
 *function*
 
 ```python
-registry_descriptors(registry: 'TypeRegistry' = <crawfish.typesystem.registry.TypeRegistry object at 0x108ac4c50>) -> 'list[dict[str, object]]'
+registry_descriptors(registry: 'TypeRegistry' = <crawfish.typesystem.registry.TypeRegistry object at 0x1092b4f50>) -> 'list[dict[str, object]]'
 ```
 
 Serialize a registry's records to JSON descriptors for the child.
@@ -6825,4 +6845,295 @@ Serialize a lockfile to its canonical JSON text (deterministic, committable).
 *value* — `int`
 
 `LOCKFILE_VERSION = 1`
+
+### `with_skill`
+
+*function*
+
+```python
+with_skill(base: 'Definition', skill: 'SkillRef') -> 'Definition'
+```
+
+Copy-on-write: return a **new frozen** Definition that acquires ``skill`` (a version pin).
+
+The skill enters identity by its ``{id, version}`` pin folded into the shared
+``dependencies`` list (reference-not-embed) — so the composed sha versions when the skill
+version moves, without copying the skill body inline. Receiver untouched.
+
+### `with_context`
+
+*function*
+
+```python
+with_context(base: 'Definition', obj: 'Summonable', *, mode: 'SummonMode' = <SummonMode.READONLY: 'readonly'>) -> 'Definition'
+```
+
+Copy-on-write: return a **new frozen** Definition that summons ``obj`` as pinned context.
+
+Stores only a :class:`SummonRef` (``{id, version, mode}``) — the summoned unit's version
+is **snapshotted at compose time** (a moving pointer is ``recall``). ``export().checksum``
+therefore changes iff the pinned summon version changes. ``mode`` defaults ``readonly``
+until F-7 lands ``.mutable()`` narrowing; a read-only summon is context the agent reads,
+never an instruction surface (security boundary upheld). Receiver untouched.
+
+### `with_agent`
+
+*function*
+
+```python
+with_agent(base: 'Definition', agent: 'AgentSpec', *, replace: 'bool' = False) -> 'Definition'
+```
+
+Copy-on-write: return a **new frozen** Definition with ``agent`` added to the team.
+
+``replace=True`` swaps an existing agent of the same ``role`` (else appends). The
+receiver is never mutated; the result re-freezes to a fresh ``version.sha`` (the sha
+moves iff a knob actually changed). Composable.
+
+### `SkillRef`
+
+*class* — bases: `BaseModel`
+
+A versioned pin to a skill the Definition acquires (``with_skill``).
+
+A skill enters identity by **pinned version**, not embedded content: the ``id`` + the
+frozen ``version`` string fold into the content hash so the composed Definition versions
+when the skill version moves, without copying the skill's mutable body inline.
+
+### `SummonRef`
+
+*class* — bases: `BaseModel`
+
+A pinned, reference-only handle to a summoned context unit (``with_context``).
+
+``{id, version, mode}``: the summoned unit enters the Definition's identity by its
+**pinned version snapshot** (``str(Version)`` at compose time), never by embedding its
+mutable body — so ``export().checksum`` moves iff the pinned version moves. ``mode`` is
+``"readonly"`` until F-7 lands ``.mutable()`` narrowing; a read-only summon is context
+data the agent may read, never an instruction surface.
+
+### `SummonMode`
+
+*class* — bases: `str`, `Enum`
+
+How a summoned context unit is carried into a Definition.
+
+``READONLY`` is the default and the safe one until F-7 lands ``.readonly()`` /
+``.mutable()`` narrowing: the summoned unit is reference-only context the agent may
+read, never an instruction surface and never mutated through this Definition.
+
+Members: `READONLY` = `'readonly'`, `MUTABLE` = `'mutable'`
+
+### `Summonable`
+
+*class* — bases: `Protocol`
+
+A unit that can be summoned into a Definition as pinned, read-only context.
+
+The structural contract :meth:`Definition.with_context` accepts (ADR 0002 — structural
+typing, never ``isinstance`` on a concrete class): anything carrying an ``id`` and a
+``version`` (a :class:`Freezable` Definition satisfies it, as does any artifact with the
+two attributes). Its pinned version is snapshotted at compose time — a *moving* pointer
+is ``recall`` (AL-DV2), not this.
+
+```python
+Summonable(*args, **kwargs)
+```
+
+### `Wiki`
+
+*class* — bases: `Freezable`
+
+A versioned, summonable, narrowable knowledge unit. Freezable.
+
+Typed pages (reusing :class:`ContextEntry`), a content hash, and a
+:class:`~crawfish.versioning.Version`. :meth:`with_page` is **copy-on-write**: it
+returns a *new frozen* Wiki with a distinct sha and leaves the receiver unchanged; a
+tainted page stays tainted across the edit. Mutating a frozen Wiki raises
+:class:`FrozenError` (Freezable). ``readonly()``/``mutable()`` expose the read/edit
+modes; ``mutable()`` is rejected in eval mode (a frozen Wiki).
+
+**Methods**
+
+- `consult(self, *, into: 'Context | None' = None) -> 'Context'` — Materialise the Wiki's pages as a :class:`Context` — **data, never instructions**.
+- `content_sha(self) -> 'str'` — Deterministic content hash over the pages — a **Merkle over page leaves**.
+- `export(self) -> 'dict[str, JSONValue]'` — The summon record: the PINNED SHA, never the body.
+- `freeze(self) -> 'None'` — Seal the Wiki at its content hash (the sha CARRIES the content identity).
+- `frozen_copy(self) -> 'Wiki'` — A frozen copy pinned at the current content sha (the eval-mode artifact).
+- `mutable(self) -> 'Wiki'` — Return a train-mode (unfrozen) edit handle — **rejected in eval mode**.
+- `page(self, title: 'str') -> 'WikiPage | None'` — Return the page addressed by ``title``, or ``None``.
+- `persist(self, store: 'Store') -> 'None'` — Persist this Wiki through the ``Store`` seam (a ScrubbingStore redacts secrets).
+- `readonly(self) -> 'SummonRef'` — Summon this Wiki read-only — a :class:`SummonRef` pinned at its content sha.
+- `with_page(self, title: 'str', value: 'JSONValue', *, value_schema: 'list[Parameter] | None' = None, tainted: 'bool' = True, trust: 'TrustTier' = <TrustTier.UNTRUSTED: 'untrusted'>, lineage: 'str | None' = None, role: 'str' = 'wiki') -> 'Wiki'` — Return a NEW frozen Wiki with ``title`` added/replaced (copy-on-write).
+
+### `WikiPage`
+
+*class* — bases: `BaseModel`
+
+One typed page of a :class:`Wiki`. Frozen; taint + trust tier propagate.
+
+Reuses the :class:`~crawfish.runtime.context_artifact.ContextEntry` value model (typed
+value, schema, taint, lineage) and adds a stable ``title`` (how a page is addressed)
+and a :class:`TrustTier`. Frozen, so a page is content-stable: editing it is a
+copy-on-write that mints a new page (and, in turn, a new Wiki sha).
+
+**Methods**
+
+- `page_sha(self) -> 'str'` — A deterministic content hash over this page (the Merkle leaf).
+
+### `TrustTier`
+
+*class* — bases: `str`, `Enum`
+
+Source provenance / trust tier of a knowledge page (gap S6).
+
+A corpus is a persistent stored-injection surface and binary taint is not enough:
+a Wiki built over ``repo/src`` is more trustworthy than one over ``customer-tickets``.
+The tier is carried on every page so a consumer can refuse to let low-trust content
+influence a high-trust decision. It NEVER lowers taint — even ``TRUSTED`` content is
+summoned tainted (data, not instructions); the tier only ever raises suspicion.
+
+Members: `TRUSTED` = `'trusted'`, `COMMUNITY` = `'community'`, `UNTRUSTED` = `'untrusted'`
+
+### `RagSeam`
+
+*class* — bases: `Protocol`
+
+The deferred retrieval contract (CRA-227 — ``Rag`` half, NOT implemented).
+
+A future ``Rag`` is :class:`Freezable` + summonable like :class:`Wiki`. Its identity
+is the **index version** (corpus-sha + embed-model id + chunker config). ``retrieve``
+over a frozen index is a pure ``(query, version) -> hits`` function — not a stochastic
+primitive — so it is replay-deterministic. Implementations MUST: route embeddings
+through the secret-scrubbing seam; return :class:`ContextEntry` hits that are tainted
+by default and carry the source page's :class:`TrustTier`; mint a new sha only on
+re-index. Until then every method raises :class:`RagDeferred`.
+
+```python
+RagSeam(*args, **kwargs)
+```
+
+**Methods**
+
+- `retrieve(self, query: 'str', *, k: 'int' = 3, org_id: 'str' = 'local') -> 'list[ContextEntry]'` — Return the top-``k`` tainted hits for ``query`` (DEFERRED — raises RagDeferred).
+
+### `RagDeferred`
+
+*class* — bases: `NotImplementedError`
+
+Raised by the deferred :class:`RagSeam` surface — retrieval is a follow-on.
+
+The seam exists so callers and the summon/trust-tier/scrubbing design are fixed now;
+the embedding + Merkle-index + ``retrieve`` implementation lands later.
+
+### `WIKI_RECORD_KIND`
+
+*value* — `str`
+
+`WIKI_RECORD_KIND = 'wiki'`
+
+### `DefinitionStore`
+
+*class*
+
+A Store-backed, append-only, org-scoped name→hash registry for Definitions.
+
+Git for Definitions: a mutable name pointer over an append-only, content-addressed object
+store. ``save`` moves the pointer (the only mutation) and appends a lineage event;
+``recall`` resolves ``name`` (latest) or ``name@sha`` / a bare sha (a pinned historical
+version) by reading a stored object — it never mints a sha. Every row is ``org_id``-scoped
+via the underlying :class:`Store`, so a name in org A is invisible to org B.
+
+```python
+DefinitionStore(store: 'Store', *, org_id: 'str' = 'local') -> 'None'
+```
+
+**Methods**
+
+- `head(self, name: 'str') -> 'str'` — The sha the name pointer currently names. Raises :class:`UnknownNameError`.
+- `log(self, name: 'str') -> 'list[DefinitionVersion]'` — The full append-only version lineage for ``name``, oldest → newest.
+- `recall(self, name: 'str', *, sha: 'str | None' = None) -> 'Definition'` — Resolve a Definition by name (latest) or a pinned historical ``sha``. Pure.
+- `save(self, name: 'str', definition: 'Definition', *, parent: 'str | None' = None) -> 'str'` — Record ``name → definition.content_sha`` and append a lineage event; return the sha.
+
+### `DefinitionVersion`
+
+*class* — bases: `BaseModel`
+
+One append-only point in a name's version log — the lineage edge (CRA-225).
+
+A ``save`` records exactly one of these. It mirrors the lineage shape of
+:class:`crawfish.learning.VersionRecord` (``sha`` + ``parent_sha`` + the frozen
+``definition``) but is a distinct, **purely append-only** record: it carries no mutable
+``active`` flag (the *name* row is the single mutable pointer here, not a per-version
+bit) and no eval ``scores`` (a name registry is not a tuner lineage). Keeping them
+separate avoids coupling a git-style pointer log to the LearningLoop's promotion state.
+
+### `modify`
+
+*function*
+
+```python
+modify(store: 'DefinitionStore', name: 'str', fn: 'Callable[[Definition], Definition]') -> 'str'
+```
+
+Git-style branch-local edit: ``recall → fn → save(parent=old_sha)``. Returns new sha.
+
+``fn`` composes via the ``with_*`` derivation operators (each returns a **new frozen**
+Definition), so the result is already sealed and content-hashed; ``modify`` saves it with
+the prior sha as the ``parent`` lineage edge. The pointer advances to the new content and
+the old sha stays recallable via ``recall(name, sha=old)`` (append-only history).
+
+**Train mode only**: a recalled, frozen (eval-mode) name is read-only, so an ``fn`` that
+tries to edit it in place raises :class:`~crawfish.versioning.version.FrozenError` — the
+AC that ``modify`` on an eval-mode name raises. Compose with ``with_*`` (copy-on-write)
+instead of mutating. Deterministic: the same start + a pure ``fn`` ⇒ the same resulting
+sha.
+
+Raises :class:`UnknownNameError` if ``name`` has no pointer; :class:`UnfrozenDefinitionError`
+if ``fn`` returns an unfrozen draft.
+
+### `reset`
+
+*function*
+
+```python
+reset(store: 'DefinitionStore', name: 'str', to: 'str') -> 'str'
+```
+
+Git checkout: move the name pointer back to a prior recorded ``to`` sha. Returns it.
+
+A **pure pointer move** — it mints no content (no new object, no new lineage event), is
+reversible, and refuses a ``to`` that is not in ``log(name)`` (raises
+:class:`UnreachableShaError`). After ``reset``, ``recall(name)`` and the original
+``recall(name, sha=to)`` return content-equal Definitions.
+
+Raises :class:`UnknownNameError` if ``name`` has no pointer.
+
+### `UnfrozenDefinitionError`
+
+*class* — bases: `ValueError`
+
+``save`` was handed a Definition that is not frozen (eval-mode).
+
+Un-versioned mutation is forbidden: a name pointer may only ever point at a sealed,
+content-hashed artifact, so ``save`` rejects an unfrozen draft. Freeze (or re-freeze via
+a ``with_*`` derivation) first.
+
+### `UnknownNameError`
+
+*class* — bases: `KeyError`
+
+``recall`` / ``log`` / ``modify`` / ``reset`` referenced a name with no pointer.
+
+A name only exists once ``save`` has recorded a pointer for it in this ``org_id``; a name
+saved in another org is invisible (cross-tenant isolation).
+
+### `UnreachableShaError`
+
+*class* — bases: `ValueError`
+
+``reset`` was asked to move a name to a sha that is not in that name's log.
+
+``reset`` is a git checkout: it may only rewind to a version actually recorded for the
+name (so the pointer never lands on content the lineage never produced).
 

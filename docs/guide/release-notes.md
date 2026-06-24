@@ -3,6 +3,59 @@
 Notable, user-facing changes. For the exact public-symbol surface of any release, see the
 [API reference](api-reference.md); for the longer arc, see the [Roadmap](../roadmap/README.md).
 
+## Agent language — Milestone 6: variables & knowledge
+
+An agent stops being a fixed artifact and becomes a **variable**: a content-addressed value
+you compose from parts, name, and move through a version log — **git for agents** — and
+knowledge becomes something you **summon** by reference as data. New, all importable from
+the top-level `crawfish` package:
+
+- **Copy-on-write composition — `with_*` (CRA-224, on the shared content-hash path of
+  CRA-223).** `with_skill` / `with_agent` / `with_context` / `with_inputs` / `with_policy`
+  each take a base Definition, deep-copy it unfrozen, apply one structural edit, and re-seal
+  it through the **single** content-hash path — returning a **new frozen** Definition while
+  the receiver is untouched. Two structurally identical compositions collapse to one sha
+  (idempotent); any knob diff diverges it; `with_*` on a frozen receiver copies first
+  (never raises), but mutating the **returned** object does. A skill or summon enters by
+  **reference, not embed** (a version pin folded into `dependencies`), so `export().checksum`
+  changes *iff* the pinned version changes. Consequential knobs (model, policies, Sink
+  targets) stay static author config. New symbols: `with_skill`, `with_context`,
+  `with_agent`, `with_inputs`, `with_policy`, `SkillRef`, `SummonRef`, `SummonMode`,
+  `Summonable`.
+- **Git for agents — `DefinitionStore` save/recall (CRA-225) + modify/reset (CRA-226).** A
+  name is a **mutable pointer** into an **append-only, immutable, content-addressed object
+  store** — git's exact ergonomic. `save(name, defn)` stores the body content-addressed
+  (dedup), moves the `name → sha` pointer (the **sole** mutation), and appends a
+  `DefinitionVersion` lineage event with the `parent` edge; it requires a frozen (eval-mode)
+  Definition (`UnfrozenDefinitionError` otherwise). `recall(name)` / `recall(name, sha=...)`
+  is **pure** — re-seals a stored object and **never mints a new sha**; `log` / `head` expose
+  the lineage. `modify(store, name, fn)` is the commit verb (`recall → fn → save(parent)`,
+  `fn` composing via `with_*`); `reset(store, name, to)` is the checkout verb — a **pure
+  pointer move** that mints no object and refuses an unreachable sha
+  (`UnreachableShaError`). Every plane is `org_id`-scoped. New symbols: `DefinitionStore`,
+  `DefinitionVersion`, `modify`, `reset`, `UnfrozenDefinitionError`, `UnknownNameError`,
+  `UnreachableShaError`.
+- **Summonable knowledge — the `Wiki` (CRA-227); `Rag` deferred.** A `Wiki` is a versioned,
+  content-hashed, summonable knowledge unit whose `content_sha` is a **Merkle over page
+  leaves** (a re-hash re-derives only the changed page). `with_page` is copy-on-write; pages
+  are **tainted by default** and carry a `TrustTier` (`TRUSTED`/`COMMUNITY`/`UNTRUSTED`) that
+  only ever *raises* suspicion — never lowers taint. `readonly()` pins it into a Definition
+  by a `SummonRef` carrying the **content sha, never the body** (the export checksum tracks
+  the pin, so a secret body can't leak through the reference surface); `mutable()` is the
+  train-mode edit handle, **rejected on a frozen (eval-mode) Wiki**. `consult()` materialises
+  a `Context` whose entries are **tainted (fluid)**, so summoned knowledge flows through the
+  fluid-data block and can never reach an instruction slot or a static-only Sink. Persistence
+  rides the `Store` seam (a `ScrubbingStore` redacts secrets on write), tenancy-scoped by
+  `org_id`. The retrieval half (`Rag`) ships as a **seam only** (`RagSeam` / `RagDeferred`),
+  locking in scrubbed embeddings and tainted, trust-tier-carrying hits so the deferred impl
+  can't regress them. New symbols: `Wiki`, `WikiPage`, `TrustTier`, `RagSeam`, `RagDeferred`,
+  `WIKI_RECORD_KIND`.
+
+Learn it: the [Agents as variables guide](variables-and-knowledge.md) (runnable, mirrors the
+triage demo — compose a variant, save/recall by name, modify/reset across the version log,
+consult a Wiki) and the
+[Concepts → agents-as-variables half](concepts.md#the-agents-as-variables-half-compose-version-summon).
+
 ## Agent language — Milestone 5: the operator surface
 
 The flagship slice completes. The control plane, composition surface, tunable-ML library, and

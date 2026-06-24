@@ -29,6 +29,7 @@ the verifier-gated **`Refine`** operator (CL-1/CL-2/CL-4) — in one scenario:
 | 9a | **M4:** abstention — turn a low-confidence triage Output into a typed `Abstention` (threshold off the reliability curve) and Router-branch it to a `review` path | TS-4 | `Abstention`, `abstain_below_calibrated`, `is_abstention` |
 | 9g | **M4:** house-guard — model proposes a rule (one stochastic leaf), distil to a pure predicate, EARN it against the corpus on a joint precision/coverage bar, then BLOCK a disallowed output model-free | TS-7 | `propose_rule`, `distill`, `HouseGuard.synthesize` |
 | 9m | **M4:** constrained decoding — produce a structured field under a static `Grammar` (enum); the constrained field is valid by construction (zero repairs) where the unconstrained decode is not | TS-8 | `Grammar`, `Grammar.enforce` |
+| 9v | **M6:** variables & knowledge — compose a specialized variant by copy-on-write (`with_skill`∘`with_context` → a new frozen sha); `save`/`recall`/`modify`/`reset` it through a `DefinitionStore` (git for agents); summon a `Wiki` and `consult` it so its typed pages reach the agent as **tainted** data | AL-DV1/2/3, AL-K1 | `with_skill`, `with_context`, `DefinitionStore`, `modify`, `reset`, `Wiki` |
 | 10 | fire the Sink — permitted **only** because the definition is frozen | security spine | static/frozen-only sink |
 
 ## Deterministic run (CI / no credentials, $0)
@@ -118,6 +119,71 @@ every subsequent run replays at `$0`. (Earlier figures — `52 ≈ $3.12` pre-M2
 > so the F-6 honesty invariant `total_spend <= worst_case` survives the k-fan-out — drop
 > that term and a fresh-record live run that draws all `k` samples would (correctly) breach
 > the bound. `test_demo_taming.py::test_worst_case_includes_quorum_k_fanout` guards it.
+
+## Milestone 6 live evidence — variables & knowledge (compose / git-for-agents / wiki)
+
+Milestone 6 made **Definitions values** and stood up **summonable knowledge** (CRA-223..227):
+copy-on-write composition (`with_skill` / `with_context` in `crawfish.derive`), a git-style
+`DefinitionStore` (`save` / `recall` / `modify` / `reset`), and a versioned, summonable `Wiki`.
+The cumulative scenario now contains a real variables/knowledge step (printed as the three
+`compose` / `git for agents` / `wiki` lines under step 9):
+
+- **Compose (9v-1, AL-DV1).** The frozen triage definition is borrowed as a value and
+  specialized by copy-on-write: `with_skill` pins a versioned `billing-specialist` skill
+  (reference-not-embed), then `with_context` summons a `Wiki` — each returns a **new frozen**
+  Definition with a DISTINCT content sha and leaves the receiver untouched. Consequential knobs
+  (model / policies / Sink targets) stay static author config; a fluid value can never set them.
+- **Git for agents (9v-2, AL-DV2/3).** `DefinitionStore.save(name, variant)` records a mutable
+  name pointer over an append-only, content-addressed object store; `recall(name)` re-mints the
+  **same sha** (sha-identity round-trip); `modify(...)` composes another skill into a **new
+  lineage version** whose `parent_sha` names the saved version; `reset(name, old_sha)` is a pure
+  **git-checkout** that moves the pointer back and mints no content. The append-only log carries
+  the whole lineage. `save` refuses an unfrozen draft, `reset` refuses an unreachable sha, and a
+  name in org A is invisible to org B (tenancy isolation).
+- **Summonable Wiki (9v-3, AL-K1).** A two-page billing-policy `Wiki` (Merkle over page leaves)
+  is summoned into the variant via `with_context` (re-versioning it by the Wiki's pinned sha) and
+  `consult`ed: each typed page materialises as a **tainted (fluid)** `Context` entry, so the
+  knowledge reaches the agent as **DATA** — it can never reach an instruction slot or a static-only
+  Sink (the SECURITY.md boundary). Even `TRUSTED`-tier pages are summoned tainted.
+
+**Determinism / cost honesty (load-bearing).** Every M6 operation is copy-on-write / pure Store
+data / a pure `(wiki) -> Context` fold — **no model call** — so the step is bit-identical on the
+mock and live path and contributes **zero** metered calls. The F-6 structural worst case is
+therefore **unchanged at `150 calls = $9.00`** on haiku (M5's figure); `craw demo` still prints
+`worst=150 calls`. There is no live-vs-mock semantic gap to certify here (unlike Quorum/Refine):
+the operators are deterministic, so the same assertions hold on both paths.
+
+### Exact command for the M6 live gate
+
+```bash
+claude -p "say ok"                                  # confirm auth
+uv run craw demo --live --model claude-haiku-4-5    # real haiku; records cassettes
+uv run craw demo --live --model claude-haiku-4-5    # re-run: replays, spend $0
+```
+
+### Evidence checklist (verifier fills this in)
+
+Run the command above and confirm, on the `compose` / `git for agents` / `wiki` lines under step 9:
+
+- [ ] **Compose is copy-on-write** — `compose (CoW variant)` prints `with_skill∘with_context: base
+  <sha> -> variant <sha> (new frozen sha, receiver untouched)` with `variant != base`.
+- [ ] **Git for agents round-trips** — `git for agents (save/recall/modify/reset)` prints `save
+  <sha> -> recall identity=True -> modify <sha> (parent <sha>) -> reset back (head=<sha>);
+  log=[…]`: save↔recall by sha-identity, modify mints a new version whose parent is the saved sha,
+  and reset checkouts the pointer back to the original.
+- [ ] **Wiki consulted as data** — `wiki (summon + consult as data)` prints `summoned 2-page wiki
+  <sha> into variant; consult -> 2 entries, all tainted=True (data, not instructions)`.
+- [ ] **Budget unchanged** — the M6 step makes NO model call; step 6 still prints `worst=150
+  calls` (M6 added zero metered calls), and the run did not hit `BudgetExceeded`.
+- [ ] **Bit-identical replay** — two `--live` runs print the same compose/variant sha, the same
+  `git for agents` lineage (saved/modified shas), and the same wiki sha; the second run replays $0.
+
+The deterministic path (`uv run craw demo`, `$0`) exercises every one of these (M6 is model-free,
+so the mock and live paths coincide bit-for-bit); the acceptance test is
+`packages/crawfish/tests/test_demo_variables.py` (17 tests, no live calls — compose CoW +
+receiver-untouched + idempotence, save/recall sha-identity, modify new-version + parent edge,
+reset checkout, the `save`/`reset`/`modify`/tenancy negative guards, and the Wiki consult-as-
+tainted-data boundary).
 
 ## Milestone 4 live evidence — taming stochasticity (Quorum / abstain / house-guard / grammar)
 

@@ -17,6 +17,13 @@ decides "good enough" and a mid-loop crash resumes at ``$0`` (CL-4). The triage 
 drafts a reply, the gated critic judges it, and ``Refine`` iterates until the verifier
 accepts or a bound (``max_iters`` / the shared ``CostBudget``) is hit.
 
+**Step 9v** is the Milestone-6 VARIABLES & KNOWLEDGE surface: a specialized triage variant is
+composed by copy-on-write (``with_skill``∘``with_context`` → a new frozen sha), round-tripped
+through a :class:`~crawfish.definition_store.DefinitionStore` (``save``/``recall``/``modify``/
+``reset`` — git for agents), and a summonable :class:`~crawfish.wiki.Wiki` is consulted so its
+typed pages reach the agent as TAINTED data (never an instruction surface). It is CoW/Store/
+pure-fold — NO model call — so the F-6 worst case is unchanged.
+
 **Step 9t** is the Milestone-3 FLAGSHIP: the full train/eval cycle on the triage agent.
 ``train()`` enters mutable mode, :func:`~crawfish.metrics.calibrate` measures the noise
 band over seeded re-runs, the cost-regularized :class:`~crawfish.tuner.Objective` picks a
@@ -65,6 +72,8 @@ from crawfish.core.types import Flow, JSONValue, Node, NodeKind, Parameter
 from crawfish.cost import CostEstimate, CostShape, compose_cost
 from crawfish.definition import Definition
 from crawfish.definition.types import AgentSpec, Coordination, DefinitionRef, TeamSpec
+from crawfish.definition_store import DefinitionStore, modify, reset
+from crawfish.derive import SkillRef, with_context, with_skill
 from crawfish.emission import CorrectionType, Provenance, emit_correction
 from crawfish.eval import (
     EvalCase,
@@ -104,6 +113,7 @@ from crawfish.tuner import KnobDomain, Objective, TuneSpec
 from crawfish.tuner import eval as eval_mode
 from crawfish.tuner import train as train_mode
 from crawfish.verifier import GatedVerifier, Verifier
+from crawfish.wiki import TrustTier, Wiki
 from crawfish.workflow import Recurse, RecurseResult, recurse
 
 if TYPE_CHECKING:
@@ -242,6 +252,66 @@ class DemoResult:
     lock_redrift_ok: bool = False  # a re-resolve of the unchanged closure yields the SAME sha
     lock_mutation_detected: bool = False  # mutating a unit's content diverges the closure_sha
     lock_roundtrip_ok: bool = False  # write_lockfile -> read_lockfile re-verifies the closure_sha
+    # --- Milestone-6 VARIABLES & KNOWLEDGE step (compose / git-for-agents / summonable wiki). ---
+    var_base_sha: str = ""  # the borrowed triage variant's frozen sha BEFORE composition
+    var_composed_sha: str = ""  # the with_skill∘with_context variant's NEW frozen sha (CoW)
+    var_cow_versioned: bool = False  # composing minted a DISTINCT sha (CoW versions the agent)
+    var_saved_sha: str = ""  # the sha DefinitionStore.save recorded the name pointer at
+    var_recall_identity_ok: bool = False  # recall(name) re-minted the SAME sha (sha-identity)
+    var_modified_sha: str = ""  # modify(...) minted a NEW lineage version (distinct sha)
+    var_modify_versioned: bool = False  # modify produced a sha != the saved one (a new version)
+    var_reset_sha: str = ""  # reset(name, old_sha) moved the pointer back (git checkout)
+    var_reset_ok: bool = False  # after reset, head(name) == the original saved sha
+    var_log_shas: list[str] = field(default_factory=list)  # version-log lineage (oldest->newest)
+    var_lineage_parent_ok: bool = False  # the modified version names the saved version as parent
+    wiki_sha: str = ""  # the summonable Wiki's frozen content sha (Merkle over pages)
+    wiki_pages: int = 0  # how many typed pages the Wiki carries
+    wiki_summoned_into_variant: bool = False  # with_context(variant, wiki) re-versioned it
+    wiki_consult_entries: int = 0  # how many entries reached the agent via consult()
+    wiki_consult_all_tainted: bool = False  # every consulted entry is FLUID (injection boundary)
+    wiki_content_is_data: bool = False  # the page body reached the agent as DATA (not a prompt)
+
+    def _variables_step_ok(self) -> bool:
+        """Certify the Milestone-6 VARIABLES & KNOWLEDGE primitives ran correctly (mock + live).
+
+        All three are deterministic over the demo's own fixtures — copy-on-write composition is a
+        pure structural transform, the DefinitionStore is pure Store data, and ``Wiki.consult`` is a
+        pure ``(wiki) -> Context`` fold — so, like the M4/M5 steps, they have no model-variance
+        branch and hold bit-identically on BOTH paths (and add NOTHING to the cost worst case).
+
+        * **Compose (AL-DV1).** ``with_skill``/``with_context`` returned a NEW frozen Definition
+          with a DISTINCT content sha (CoW versions the agent; the receiver is untouched).
+        * **Git for agents (AL-DV2/3).** ``save`` recorded the name pointer at the composed sha;
+          ``recall`` re-minted the SAME sha (sha-identity); ``modify`` minted a NEW lineage version
+          whose parent edge names the saved version; ``reset`` moved the pointer back to the
+          original sha (a pure git-checkout), and the append-only log carries the whole lineage.
+        * **Summonable Wiki (AL-K1).** A multi-page Wiki was summoned into the variant via
+          ``with_context`` (re-versioning it), and ``consult`` materialised its pages as a Context
+          whose every entry is **tainted (fluid)** — the page content reaches the agent as DATA,
+          never an instruction surface (the SECURITY.md boundary).
+        """
+        return bool(
+            # compose: CoW minted a distinct, frozen sha
+            self.var_base_sha
+            and self.var_composed_sha
+            and self.var_cow_versioned
+            # git for agents: save -> recall sha-identity, modify new version, reset checkout
+            and self.var_saved_sha == self.var_composed_sha
+            and self.var_recall_identity_ok
+            and self.var_modify_versioned
+            and self.var_modified_sha != self.var_saved_sha
+            and self.var_reset_ok
+            and self.var_reset_sha == self.var_saved_sha
+            and self.var_lineage_parent_ok
+            and len(self.var_log_shas) >= 2  # the saved + the modified version
+            # summonable wiki: summoned, consulted, and reached the agent as tainted DATA
+            and self.wiki_sha
+            and self.wiki_pages >= 2
+            and self.wiki_summoned_into_variant
+            and self.wiki_consult_entries == self.wiki_pages
+            and self.wiki_consult_all_tainted  # data, never instructions (the injection boundary)
+            and self.wiki_content_is_data
+        )
 
     def _surfaces_step_ok(self) -> bool:
         """Certify the Milestone-5 SURFACES primitives ran correctly (mock + live).
@@ -452,6 +522,12 @@ class DemoResult:
             # (never undercounts); and the resolver pinned a closure whose lockfile is drift-
             # gated (a mutation diverges the closure_sha) and round-trips data-only.
             and self._surfaces_step_ok()
+            # Milestone-6 VARIABLES & KNOWLEDGE: a specialized triage variant was composed by
+            # copy-on-write (with_skill∘with_context -> a new frozen sha), round-tripped through
+            # DefinitionStore (save -> recall sha-identity -> modify a new lineage version ->
+            # reset the pointer back, git-for-agents), and a summonable Wiki was consulted so its
+            # pages reached the agent as TAINTED data (never an instruction surface).
+            and self._variables_step_ok()
         )
 
     def summary(self) -> str:
@@ -1803,6 +1879,15 @@ def run_self_improvement(
     # summoned closure into a drift-gated Lockfile. All on the SAME shared CostBudget.
     _run_surfaces_step(backend, res, defn, ctx, org_id=org_id)
 
+    # --- 9v. Milestone-6: VARIABLES & KNOWLEDGE — compose / git-for-agents / wiki. ---
+    # Definitions are values: a specialized triage variant is COMPOSED by copy-on-write
+    # (with_skill∘with_context -> a new frozen sha), saved/recalled/modified/reset through a
+    # DefinitionStore (git for agents — name pointer over an append-only content-addressed
+    # object store), and a summonable Wiki is consulted so its typed pages reach the agent as
+    # TAINTED data (the injection boundary). All of it is CoW/Store/pure-fold — NO model call,
+    # so the F-6 worst case is unchanged — and bit-identical on both the mock and live path.
+    _run_variables_step(backend, res, defn, ctx, store, org_id=org_id)
+
     # --- cross-tenant isolation: org B sees NONE of org A's corpus (security). -
     res.org_b_cases = len(GoldenSet.from_corrections(store, org_id="other-org").cases())
     res.steps.append(
@@ -2767,6 +2852,156 @@ def _run_refine_step(
             "refine resume ($0)",
             f"committed drafts replayed — resume spend=${res.refine_resume_spent_usd:.2f} ($0), "
             f"sha matches uninterrupted run",
+        )
+    )
+
+
+# ------------------------------------------------- Milestone-6: variables & knowledge
+#: The skill the specialized variant acquires (a versioned pin, reference-not-embed) and the
+#: name the DefinitionStore registers the variant under (git-style mutable name pointer).
+_SPECIALIST_SKILL = SkillRef(id="billing-specialist", version="0.1")
+_REFUND_TOOL_SKILL = SkillRef(id="refund-tool", version="0.1")
+_VARIANT_NAME = "billing-triage"
+
+
+def _frozen_copy(defn: Definition) -> Definition:
+    """A sealed (eval-mode) deep copy of ``defn`` — used to borrow a definition as a value.
+
+    A :class:`Definition` freezes in place (no ``frozen_copy`` helper), so we deep-copy first
+    and seal the copy: the original stays mutable/untouched and the copy is a reproducible,
+    content-hashed artifact ready to compose with the copy-on-write ``with_*`` operators."""
+    sealed = defn.model_copy(deep=True)
+    sealed.freeze()
+    return sealed
+
+
+def _build_billing_wiki(org_id: str) -> Wiki:
+    """A small, summonable knowledge unit — two TRUSTED typed pages of billing policy.
+
+    The pages are authored ``tainted=True`` (the injection boundary holds even for trusted
+    first-party knowledge — a Wiki reaches the agent as DATA, never instructions). Building it
+    is pure copy-on-write (``with_page`` mints a new frozen Wiki each time); no model call."""
+    return (
+        Wiki(org_id=org_id)
+        .with_page(
+            "refund-policy",
+            "Refunds are issued within 30 days of the charge, no questions asked.",
+            trust=TrustTier.TRUSTED,
+        )
+        .with_page(
+            "double-charge-runbook",
+            "On a duplicate charge: confirm the invoice id, refund the later charge, "
+            "and notify the customer within one business day.",
+            trust=TrustTier.TRUSTED,
+        )
+    )
+
+
+def _run_variables_step(
+    backend: Backend,
+    res: DemoResult,
+    defn: Definition,
+    ctx: RunContext,
+    store: Store,
+    *,
+    org_id: str,
+) -> None:
+    """Run the Milestone-6 VARIABLES & KNOWLEDGE step and record its evidence.
+
+    Three deterministic, model-FREE proofs (so this step adds nothing to the F-6 worst case
+    and reproduces bit-identically on both the mock and live path):
+
+    * **Compose (AL-DV1).** Borrow the frozen triage definition as a value and specialize it by
+      copy-on-write — ``with_skill`` (a versioned skill pin) then ``with_context`` (a summoned
+      Wiki) — yielding a NEW frozen Definition with a DISTINCT content sha. The receiver is
+      never mutated; consequential knobs stay static author config.
+    * **Git for agents (AL-DV2/3).** ``DefinitionStore.save`` records a mutable name pointer
+      over an append-only, content-addressed object store; ``recall`` re-mints the SAME sha
+      (sha-identity); ``modify`` composes another skill into a NEW lineage version (whose parent
+      edge names the saved version); ``reset`` moves the pointer back to the original sha — a
+      pure git-checkout that mints no content. The append-only log carries the whole lineage.
+    * **Summonable Wiki (AL-K1).** ``with_context`` summons the multi-page Wiki into the variant
+      (re-versioning it by the Wiki's pinned sha, reference-not-embed); ``consult`` materialises
+      its pages as a :class:`Context` whose every entry is **tainted (fluid)** — the page content
+      reaches the agent as DATA, never an instruction surface (the SECURITY.md boundary).
+    """
+    # --- 9v-1. Compose a specialized variant by copy-on-write (AL-DV1). --------
+    base = defn if defn.frozen else _frozen_copy(defn)
+    res.var_base_sha = base.content_sha()
+    wiki = _build_billing_wiki(org_id)
+    res.wiki_sha = wiki.content_sha()
+    res.wiki_pages = len(wiki.pages)
+    # with_skill (a versioned pin) then with_context (summon the Wiki, reference-not-embed):
+    # each is CoW -> a new frozen sha; the composed variant differs from the borrowed base.
+    skilled = with_skill(base, _SPECIALIST_SKILL)
+    variant = with_context(skilled, wiki)
+    res.var_composed_sha = variant.content_sha()
+    res.wiki_summoned_into_variant = variant.content_sha() != skilled.content_sha()
+    res.var_cow_versioned = (
+        variant.frozen
+        and res.var_composed_sha != res.var_base_sha
+        and base.content_sha() == res.var_base_sha  # the receiver was NOT mutated
+    )
+    res.steps.append(
+        StepResult(
+            9,
+            "compose (CoW variant)",
+            f"with_skill∘with_context: base {res.var_base_sha[:12]} -> variant "
+            f"{res.var_composed_sha[:12]} (new frozen sha, receiver untouched)",
+        )
+    )
+
+    # --- 9v-2. Git for agents: save -> recall -> modify -> reset (AL-DV2/3). ---
+    ds = DefinitionStore(store, org_id=org_id)
+    saved_sha = ds.save(_VARIANT_NAME, variant)
+    res.var_saved_sha = saved_sha
+    recalled = ds.recall(_VARIANT_NAME)
+    res.var_recall_identity_ok = recalled.content_sha() == saved_sha  # sha-identity round-trip
+    # modify: compose another skill into a NEW lineage version (a pure fn -> deterministic sha).
+    modified_sha = modify(ds, _VARIANT_NAME, lambda d: with_skill(d, _REFUND_TOOL_SKILL))
+    res.var_modified_sha = modified_sha
+    res.var_modify_versioned = modified_sha != saved_sha and ds.head(_VARIANT_NAME) == modified_sha
+    # reset: git-checkout the name pointer back to the original saved sha (mints no content).
+    res.var_reset_sha = reset(ds, _VARIANT_NAME, saved_sha)
+    res.var_reset_ok = ds.head(_VARIANT_NAME) == saved_sha
+    # The append-only version log carries the whole lineage; the modified version's parent edge
+    # names the saved version (the git-style derivation chain).
+    lineage = ds.log(_VARIANT_NAME)
+    res.var_log_shas = [v.sha for v in lineage]
+    res.var_lineage_parent_ok = any(
+        v.sha == modified_sha and v.parent_sha == saved_sha for v in lineage
+    )
+    res.steps.append(
+        StepResult(
+            9,
+            "git for agents (save/recall/modify/reset)",
+            f"save {saved_sha[:12]} -> recall identity={res.var_recall_identity_ok} -> "
+            f"modify {modified_sha[:12]} (parent {saved_sha[:12]}) -> reset back "
+            f"(head={ds.head(_VARIANT_NAME)[:12]}); log={[s[:8] for s in res.var_log_shas]}",
+        )
+    )
+
+    # --- 9v-3. Summon the Wiki + consult it as DATA (AL-K1 / security boundary). ---
+    # consult is a pure (wiki) -> Context fold (NO model call): the page bodies enter the
+    # Context as TAINTED (fluid) entries, so the knowledge reaches the agent as data, never an
+    # instruction slot or a static-only Sink target. We materialise the Context and assert the
+    # taint boundary + that the page CONTENT is present as a data value (proving "reaches the
+    # agent as data") — keeping the step deterministic and $0 (no triage model call triggered).
+    consulted = wiki.consult()
+    entries = list(consulted.entries)
+    res.wiki_consult_entries = len(entries)
+    res.wiki_consult_all_tainted = bool(entries) and all(e.tainted for e in entries)
+    refund_page = wiki.page("refund-policy")
+    res.wiki_content_is_data = any(
+        refund_page is not None and e.value == refund_page.entry.value for e in entries
+    )
+    res.steps.append(
+        StepResult(
+            9,
+            "wiki (summon + consult as data)",
+            f"summoned {res.wiki_pages}-page wiki {res.wiki_sha[:12]} into variant; consult -> "
+            f"{res.wiki_consult_entries} entries, all tainted={res.wiki_consult_all_tainted} "
+            f"(data, not instructions)",
         )
     )
 

@@ -13,6 +13,7 @@ On this page:
 - [The measurement loop](#the-measurement-loop) and [the control plane](#the-control-plane-refine-and-verify) — Refine & Verify
 - [The composition surface](#the-composition-surface-branch-cycle-recurse) — branch, cycle, recurse
 - [The PyTorch-for-LLMs half](#the-pytorch-for-llms-half-train-eval-and-the-tunable-knob) — train/eval mode, calibration, variance-aware promotion
+- [The agents-as-variables half](#the-agents-as-variables-half-compose-version-summon) — compose, version (git for agents), and summon knowledge
 
 ## The directory model
 
@@ -509,6 +510,54 @@ executes unit code and re-verifies the recorded sha, **failing closed** on a tam
 drift; a mutated unit gets a new sha, so an un-versioned mutation cannot enter a frozen closure
 without a re-freeze. Learn it in the
 [Drive the language from the CLI guide](optimize-from-the-cli.md).
+
+## The agents-as-variables half — compose, version, summon
+
+The tunable-ML half makes an agent a *model with tunable weights*. This half makes it a
+**variable**: a content-addressed value you compose from parts, name, and move through a
+version log — **git for agents** — plus knowledge you **summon** by reference as data.
+
+**Composition is copy-on-write.** The `with_*` operators (`with_skill`, `with_agent`,
+`with_context`, `with_inputs`, `with_policy`) each take a base Definition, deep-copy it
+unfrozen, apply one structural edit, and re-seal it through the **single content-hash path**
+— returning a **new frozen** Definition while the receiver is untouched. Two structurally
+identical compositions collapse to one sha (idempotent); any knob diff diverges it. Because
+every op re-seals, un-versioned mutation is impossible: `with_*` on a frozen receiver copies
+first, but mutating the **returned** frozen object raises `FrozenError`. A skill or summon
+enters by **reference, not embed** — a version pin folded into `dependencies` — so
+`export().checksum` changes *iff* the pinned version changes.
+
+**A name is a mutable pointer over an immutable object store.** That is git's exact
+ergonomic, and Crawfish already had the immutable side — a frozen `Definition` is
+content-addressed by its `content_sha`. `DefinitionStore` adds the name registry:
+`save(name, defn)` stores the body content-addressed (dedup), moves the `name → sha` pointer
+(the **sole** mutation), and appends a `DefinitionVersion` lineage event with the `parent`
+edge; `recall(name)` (or `recall(name, sha=...)` for a pinned historical version) is
+**pure** — it re-seals a stored object and **never mints a new sha**. `save` requires a
+frozen (eval-mode) Definition (`UnfrozenDefinitionError` otherwise), and every plane is
+`org_id`-scoped. `modify(store, name, fn)` is the commit verb (`recall → fn → save(parent)`,
+where `fn` composes via `with_*`); `reset(store, name, to)` is the checkout verb — a **pure
+pointer move** that mints no object and refuses an unreachable sha (`UnreachableShaError`).
+
+**Knowledge is summoned by reference, and reaches the model as data.** A `Wiki` is a
+versioned, content-hashed, summonable knowledge unit whose `content_sha` is a **Merkle over
+page leaves** (a re-hash re-derives only the changed page). `with_page` is copy-on-write;
+pages are **tainted by default** and carry a `TrustTier` (`TRUSTED`/`COMMUNITY`/`UNTRUSTED`)
+that only ever *raises* suspicion — it never lowers taint. `readonly()` pins it into a
+Definition by a `SummonRef` carrying the **content sha, never the body**, so the export
+checksum tracks the pin and a secret body can't leak through the reference surface;
+`mutable()` is the train-mode edit handle, **rejected on a frozen (eval-mode) Wiki**.
+`consult()` materialises a `Context` whose entries are **tainted (fluid)** — so summoned
+knowledge flows through the fluid-data block and can never reach an instruction slot or a
+static-only Sink. The retrieval half (`Rag`) ships as a **seam only** today
+(`RagSeam` / `RagDeferred`); its safety properties — scrubbed embeddings, tainted hits
+carrying the source trust tier — are locked in now so the deferred impl can't regress them.
+
+The boundary is the same as everywhere else in the language: only sealed, content-addressed,
+eval-mode values touch the world, and summoned knowledge is data, not instructions. Learn it
+end to end in the [Agents as variables guide](variables-and-knowledge.md) (runnable, mirrors
+the triage demo — compose a variant, save/recall it by name, modify/reset across the version
+log, summon a Wiki).
 
 ## Next steps
 
