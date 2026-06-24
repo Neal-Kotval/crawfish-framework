@@ -1,14 +1,33 @@
 """Cost preview, budgets, and a live spend meter.
 
-Three pieces, all deterministic and explicitly *approximate*:
+``cost.py`` is the **single owner of the cost model** (Milestone F, F-6 / OPT-2).
+Every other plane that needs a dollar number — ``CL-3`` (cost-aware refine
+preflight), ``ALG-5`` (cost-regularized objective), the ``craw dev --estimate``
+surface — is a *consumer* of the API here and MUST NOT re-implement estimation or
+re-define the composition law. There is exactly one place where an operator's
+cost multiplier lives, and it is :class:`CostShape` below.
+
+Pieces, all deterministic and explicitly *approximate* (no live model call ever
+happens inside this module — it is a pure function of its inputs):
 
 * :func:`estimate_cost` — a dry-run preview. Given a compiled
   :class:`~crawfish.definition.types.Definition`, an item count, and a
   per-model price table, it predicts dollar spend before a single model call.
   The heuristic is simple on purpose: one "run" per agent per item, priced from
   a flat per-run table keyed by model id. Unpinned agents fall back to
-  :data:`~crawfish.runtime.command.DEFAULT_MODEL`'s price. The number is a
-  planning aid, not a guarantee.
+  :data:`~crawfish.runtime.command.DEFAULT_MODEL`'s price. The scalar
+  ``total_usd`` is the **lower bound** — it assumes every cost-bearing operator
+  fires exactly once.
+* :class:`CostShape` + :func:`compose_cost` — the operator-cost layer that the
+  audit's Gaps #5/#9 demand. A :class:`Definition`'s lower bound is blind to the
+  re-run multipliers of ``Refine`` (``max_iters``), ``Escalate`` (``2×``, on the
+  strong model), ``Quorum`` (``k``), ``Retry`` (``n``) and ``recurse``
+  (``b^max_depth``). :class:`CostShape` names one such wrapper; the
+  **composition law is multiplicative along operator nesting**:
+  ``worst_case = lower_bound × Π(per-operator multiplier)``. :func:`compose_cost`
+  folds a nesting of shapes (outermost first) onto a base :class:`CostEstimate`,
+  producing the additive ``expected_usd`` / ``worst_case_usd`` fields without
+  ever touching ``total_usd``.
 * :class:`Budget` — a warn/stop policy over spend. It layers on the existing
   hard ceiling (:class:`~crawfish.core.context.CostBudget`) rather than
   replacing it: ``Budget`` decides *ok / warn / stopped*, ``CostBudget``
@@ -20,12 +39,13 @@ Three pieces, all deterministic and explicitly *approximate*:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from crawfish.core.context import BudgetExceeded, CostBudget
 from crawfish.provider import ModelsConfig, resolve_model
@@ -40,6 +60,8 @@ __all__ = [
     "DEFAULT_MODEL_PRICES",
     "CostEstimate",
     "estimate_cost",
+    "CostShape",
+    "compose_cost",
     "BudgetState",
     "Budget",
     "spent_today",
@@ -67,6 +89,22 @@ class CostEstimate(BaseModel):
     for a single item across the whole team; ``total_usd`` scales that by the
     item count. ``per_model`` breaks the total down by resolved model id so a
     caller can see which model dominates the bill.
+
+    The estimate is a **three-number interval** (F-6 / OPT-2):
+
+    * ``total_usd`` — the **lower bound** (unchanged semantics): every
+      cost-bearing operator fires exactly once. This field's meaning is frozen;
+      consumers and existing callers may rely on it.
+    * ``worst_case_usd`` — the lower bound times the product of every operator's
+      worst-case multiplier (see :class:`CostShape` / :func:`compose_cost`). With
+      no operator wrappers it equals ``total_usd``.
+    * ``expected_usd`` — a *measured-rate* band between the two. When no measured
+      rates are supplied it equals ``worst_case_usd`` (never undercount).
+      ``expected_lo_usd`` / ``expected_hi_usd`` carry the CI so the number is a
+      band, never a falsely-precise point.
+
+    Invariant (enforced): ``total_usd <= expected_lo_usd <= expected_usd <=
+    expected_hi_usd <= worst_case_usd``.
     """
 
     model_config = {"frozen": True}
@@ -76,6 +114,50 @@ class CostEstimate(BaseModel):
     per_item_usd: float = Field(ge=0.0)
     total_usd: float = Field(ge=0.0)
     per_model: dict[str, float] = Field(default_factory=dict)
+    # Additive operator-aware fields (F-6). Default to the lower bound so a bare
+    # `CostEstimate(...)` (the old construction site / no operator wrappers) is a
+    # degenerate interval `[total_usd, total_usd, total_usd]` — back-compatible.
+    expected_usd: float = Field(default=-1.0)
+    worst_case_usd: float = Field(default=-1.0)
+    expected_lo_usd: float = Field(default=-1.0)
+    expected_hi_usd: float = Field(default=-1.0)
+
+    @model_validator(mode="after")
+    def _default_interval(self) -> CostEstimate:
+        """Fill the additive fields from ``total_usd`` when not supplied, then
+        assert the interval invariant.
+
+        A sentinel ``-1.0`` means "not supplied" — collapse it to ``total_usd``
+        so legacy callers (and any code constructing a bare estimate) get a
+        well-formed degenerate interval. With the fields present we still verify
+        the ordering so a malformed interval can never be minted.
+        """
+        # `frozen=True` blocks normal assignment; mutate via object.__setattr__,
+        # which pydantic itself uses internally for validated fields.
+        if self.worst_case_usd < 0.0:
+            object.__setattr__(self, "worst_case_usd", self.total_usd)
+        if self.expected_usd < 0.0:
+            object.__setattr__(self, "expected_usd", self.worst_case_usd)
+        if self.expected_lo_usd < 0.0:
+            object.__setattr__(self, "expected_lo_usd", self.expected_usd)
+        if self.expected_hi_usd < 0.0:
+            object.__setattr__(self, "expected_hi_usd", self.expected_usd)
+        # Lower bound never exceeds the band; band never exceeds worst case.
+        eps = 1e-9
+        if not (
+            self.total_usd <= self.expected_lo_usd + eps
+            and self.expected_lo_usd <= self.expected_usd + eps
+            and self.expected_usd <= self.expected_hi_usd + eps
+            and self.expected_hi_usd <= self.worst_case_usd + eps
+        ):
+            raise ValueError(
+                "cost interval must satisfy "
+                "total_usd <= expected_lo <= expected <= expected_hi <= worst_case "
+                f"(got total={self.total_usd}, lo={self.expected_lo_usd}, "
+                f"expected={self.expected_usd}, hi={self.expected_hi_usd}, "
+                f"worst_case={self.worst_case_usd})"
+            )
+        return self
 
 
 def _resolve_model(model: str | list[str] | None, config: ModelsConfig | None = None) -> str:
@@ -139,6 +221,212 @@ def estimate_cost(
         per_item_usd=per_item,
         total_usd=per_item * items,
         per_model=per_model,
+    )
+
+
+@dataclass(frozen=True)
+class CostShape:
+    """One cost-bearing operator wrapper and its re-run multiplier (F-6 / OPT-2).
+
+    A bare :class:`Definition` estimate assumes each agent runs once; the control
+    plane wraps that base call in operators that re-run the leaf. :class:`CostShape`
+    names one such wrapper. The **worst-case multiplier** is the most times the
+    inner call can fire:
+
+    ====================  ======================  ==================================
+    Operator              ``kind``                worst-case multiplier
+    ====================  ======================  ==================================
+    ``Refine``            ``"refine"``            ``max_iters``
+    ``Escalate``          ``"escalate"``          ``2`` (2nd attempt on the strong
+                                                  model — see ``strong_multiplier``)
+    ``Quorum``            ``"quorum"``            ``k``
+    ``Retry``             ``"retry"``             ``n``
+    ``recurse``           ``"recurse"``           ``b ** max_depth``
+    ====================  ======================  ==================================
+
+    Use the classmethod constructors (:meth:`refine`, :meth:`escalate`,
+    :meth:`quorum`, :meth:`retry`, :meth:`recurse`) rather than the raw fields —
+    they encode each operator's multiplier law in exactly one place.
+
+    ``measured_rate`` (optional, in ``[0, 1]``) is the *measured fraction of calls
+    that actually trigger the extra work* — e.g. an escalation rate of 0.2 means
+    20% of calls escalate to the strong model. It comes from ``cw.calibrate`` or
+    the ledger and is used by :func:`compose_cost` to build the **expected** band.
+    With no rate the operator is priced at its worst case (never undercount).
+    ``rate_ci`` is the half-width of the rate's confidence interval (also in
+    ``[0, 1]``); it widens the expected band so the number is never falsely precise.
+
+    ``strong_multiplier`` (escalation only) re-prices the escalated attempt: the
+    second attempt runs on the *strong* model, so its marginal cost is
+    ``strong_price / base_price`` rather than ``1``. :meth:`escalate` computes it
+    from the two per-call prices.
+    """
+
+    kind: str
+    worst_case_multiplier: float
+    measured_rate: float | None = None
+    rate_ci: float = 0.0
+    # For escalation: marginal cost of the extra (strong-model) attempt, as a
+    # multiple of one base call. 1.0 means "same price as base". For all other
+    # operators the extra calls are priced at the base rate, so this stays 1.0.
+    strong_multiplier: float = 1.0
+
+    def __post_init__(self) -> None:
+        if self.worst_case_multiplier < 1.0:
+            raise ValueError(f"{self.kind}: worst_case_multiplier must be >= 1.0")
+        if self.measured_rate is not None and not 0.0 <= self.measured_rate <= 1.0:
+            raise ValueError(f"{self.kind}: measured_rate must be in [0, 1]")
+        if not 0.0 <= self.rate_ci <= 1.0:
+            raise ValueError(f"{self.kind}: rate_ci must be in [0, 1]")
+        if self.strong_multiplier < 0.0:
+            raise ValueError(f"{self.kind}: strong_multiplier must be >= 0.0")
+
+    # --- worst-case factor -------------------------------------------------
+    def worst_case_factor(self) -> float:
+        """The multiplier this operator contributes to ``worst_case``.
+
+        For escalation the second attempt is re-priced on the strong model:
+        ``1 + strong_multiplier`` (one base call + one strong call). For every
+        other operator the inner call simply fires ``worst_case_multiplier``
+        times at the base rate.
+        """
+        if self.kind == "escalate":
+            return 1.0 + self.strong_multiplier
+        return self.worst_case_multiplier
+
+    # --- expected factor (measured-rate band) ------------------------------
+    def expected_factor(self, *, ci_sign: float = 0.0) -> float:
+        """The multiplier this operator contributes to the **expected** band.
+
+        With no ``measured_rate`` this is the worst-case factor (never
+        undercount). With a rate ``p`` the operator fires its extra work only a
+        ``p`` fraction of the time, so the expected factor interpolates between
+        "always once" (``p=0``) and the worst case (``p=1``):
+
+            ``expected = 1 + p · (worst_case_factor − 1)``
+
+        ``ci_sign`` in ``{-1, 0, +1}`` shifts ``p`` by ``rate_ci`` to build the
+        lo / point / hi edges of the band (clamped to ``[0, 1]``).
+        """
+        if self.measured_rate is None:
+            return self.worst_case_factor()
+        p = self.measured_rate + ci_sign * self.rate_ci
+        p = min(1.0, max(0.0, p))
+        return 1.0 + p * (self.worst_case_factor() - 1.0)
+
+    # --- ergonomic constructors (the multiplier law, one place each) -------
+    @classmethod
+    def refine(
+        cls, max_iters: int, *, measured_rate: float | None = None, rate_ci: float = 0.0
+    ) -> CostShape:
+        """``Refine`` worst case = ``max_iters`` inner runs."""
+        if max_iters < 1:
+            raise ValueError("refine max_iters must be >= 1")
+        return cls("refine", float(max_iters), measured_rate=measured_rate, rate_ci=rate_ci)
+
+    @classmethod
+    def escalate(
+        cls,
+        *,
+        base_price: float,
+        strong_price: float,
+        measured_rate: float | None = None,
+        rate_ci: float = 0.0,
+    ) -> CostShape:
+        """``Escalate`` worst case = base call + one strong-model attempt.
+
+        The 2× multiplier from the spec is the *count*; the *cost* re-prices the
+        second attempt on ``strong_price`` (escalation re-priced on the strong
+        model, F-6). ``strong_multiplier = strong_price / base_price``.
+        """
+        if base_price <= 0.0:
+            # A free/zero base call has no meaningful strong ratio; fall back to
+            # the count-based 2× so worst_case is still defined.
+            strong_mult = 1.0
+        else:
+            strong_mult = strong_price / base_price
+        return cls(
+            "escalate",
+            2.0,
+            measured_rate=measured_rate,
+            rate_ci=rate_ci,
+            strong_multiplier=strong_mult,
+        )
+
+    @classmethod
+    def quorum(cls, k: int) -> CostShape:
+        """``Quorum`` worst case = ``k`` samples (always fires — no rate)."""
+        if k < 1:
+            raise ValueError("quorum k must be >= 1")
+        return cls("quorum", float(k))
+
+    @classmethod
+    def retry(
+        cls, n: int, *, measured_rate: float | None = None, rate_ci: float = 0.0
+    ) -> CostShape:
+        """``Retry`` worst case = ``n`` attempts."""
+        if n < 1:
+            raise ValueError("retry n must be >= 1")
+        return cls("retry", float(n), measured_rate=measured_rate, rate_ci=rate_ci)
+
+    @classmethod
+    def recurse(cls, *, branching: int, max_depth: int) -> CostShape:
+        """``recurse`` worst case = ``branching ** max_depth`` leaf calls."""
+        if branching < 1:
+            raise ValueError("recurse branching must be >= 1")
+        if max_depth < 0:
+            raise ValueError("recurse max_depth must be >= 0")
+        return cls("recurse", float(branching**max_depth))
+
+
+def compose_cost(base: CostEstimate, shapes: Sequence[CostShape]) -> CostEstimate:
+    """Fold a nesting of :class:`CostShape`s onto a base estimate (F-6 / OPT-2).
+
+    ``shapes`` is the operator nesting **outermost-first** (e.g.
+    ``[refine(3), quorum(5)]`` for ``Refine(max_iters=3)`` wrapping
+    ``Quorum(k=5)``). The composition law is **multiplicative along the
+    nesting**::
+
+        worst_case = base.total_usd × Π shape.worst_case_factor()
+        expected   = base.total_usd × Π shape.expected_factor()   (measured-rate band)
+
+    ``total_usd`` is carried through untouched — it remains the lower bound. The
+    returned estimate's ``expected_lo_usd`` / ``expected_hi_usd`` fold the
+    per-operator ``rate_ci`` so ``expected`` is a band, never a point. With no
+    shapes (or no measured rates) ``expected == worst_case`` — the estimator
+    never undercounts.
+
+    Pure function of its inputs: no model call, no ledger read, no mutation. The
+    returned :class:`CostEstimate` is a fresh frozen value.
+    """
+    lower = base.total_usd
+    worst_factor = 1.0
+    exp_factor = 1.0
+    lo_factor = 1.0
+    hi_factor = 1.0
+    for shape in shapes:
+        worst_factor *= shape.worst_case_factor()
+        exp_factor *= shape.expected_factor(ci_sign=0.0)
+        lo_factor *= shape.expected_factor(ci_sign=-1.0)
+        hi_factor *= shape.expected_factor(ci_sign=+1.0)
+
+    worst = lower * worst_factor
+    expected = lower * exp_factor
+    lo = lower * lo_factor
+    hi = lower * hi_factor
+    # Clamp the band into [lower, worst] to absorb any float drift and guarantee
+    # the model invariant (and: expected >= lower, expected <= worst).
+    lo = min(max(lo, lower), worst)
+    hi = min(max(hi, lo), worst)
+    expected = min(max(expected, lo), hi)
+
+    return base.model_copy(
+        update={
+            "worst_case_usd": worst,
+            "expected_usd": expected,
+            "expected_lo_usd": lo,
+            "expected_hi_usd": hi,
+        }
     )
 
 
