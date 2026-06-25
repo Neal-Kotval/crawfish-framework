@@ -42,6 +42,23 @@ crash-resume. What's in the box today:
   `craw build` → container; a MkDocs docs site; an API-stability contract (stable /
   experimental / deprecated tiers + semver).
 
+## craw code — agent-authored projects (shipped)
+
+`craw code` lets an LLM agent **author and operate** a Crawfish project, with the security
+spine *enforced* rather than merely taught. When the author is a model that may be steered
+by untrusted data, code is no longer authoring-time-trusted — so it is **provenance-stamped**,
+**jailed at compile** (untrusted authored code never executes in the orchestrator process),
+and **gated before it can go live**. A `craw code <verb>` CLI family (init, new, sync,
+describe, estimate, lint, map, adopt, optimize, deploy, fleet, cancel, resume, dashboard,
+review, diagnose, validate-authoring, and a propose/approve/apply HITL gate) is the one
+execution path; a Claude Code plugin (skills + slash commands + a pinned bundle) is
+ergonomics; and a loopback-only, scrubbed ledger **dashboard** (read-model over
+`ObserverSurface`, output-encoded against tainted-ledger XSS) is the read surface. A human
+**approval gate** fails closed — an agent cannot self-promote to `--live` or replay an
+approval across a different `(component, sha)`. An optional thin **MCP veneer** exposes a
+fixed set of meta-tools over the CLI with no new authority. See the
+[craw code guide](guide/craw-code/index.md) and RFC 0001.
+
 ## The agent language — control plane, composition surface, tunable-ML library, tameness layer, operator surface, variables-and-knowledge + revolutionary capabilities shipped (in progress)
 
 Phase 2 includes a larger bet: an **agent language** where composition operators
