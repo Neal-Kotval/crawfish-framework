@@ -115,4 +115,49 @@ def diagnose(project_dir: str | Path = ".") -> DoctorReport:
             if (gen / sub).exists():
                 report.add("error", f"authored {sub}/ found inside {GENERATED_DIR}/ — move it out")
 
+    _check_plugin_pin(root, report)
     return report
+
+
+def _check_plugin_pin(root: Path, report: DoctorReport) -> None:
+    """Verify the installed plugin bundle against its recorded pin (UNFILED-PIN).
+
+    Three outcomes: no pin → nothing to check (no finding); on-disk digest != pinned digest
+    → ``error`` (the supply-chain tamper signal, fail closed); ``requires_crawfish`` range
+    excludes the installed crawfish → ``warn`` (the plugin-not-lockstepped skew). The plugin
+    bundle is the *source of the security rules*, so a silent swap must surface here.
+    """
+    from crawfish.code.plugin import (
+        BundleMismatch,
+        installed_crawfish_version,
+        read_pin,
+        requires_satisfied_by,
+        verify_bundle,
+    )
+
+    pin = read_pin(root)
+    if pin is None:
+        return
+    bundle_dir = root / ".claude" / "plugins" / "crawfish"
+    if not bundle_dir.is_dir():
+        report.add("warn", "plugin pinned in crawfish.plugin.lock but bundle not installed")
+        return
+    try:
+        verify_bundle(bundle_dir, pin)
+        report.add("ok", "plugin bundle matches its pinned digest")
+    except BundleMismatch:
+        report.add("error", "plugin bundle digest mismatch — bundle tampered or stale (re-pin)")
+    except Exception as exc:  # a malformed/unreadable bundle is a real misconfiguration
+        report.add("warn", f"plugin bundle could not be verified: {exc}")
+        return
+    installed = installed_crawfish_version()
+    try:
+        compatible = requires_satisfied_by(pin.requires_crawfish, installed)
+    except Exception:  # a malformed range is itself a finding, never a crash
+        report.add("warn", f"plugin requires_crawfish range is invalid: {pin.requires_crawfish!r}")
+        return
+    if not compatible:
+        report.add(
+            "warn",
+            f"plugin requires crawfish {pin.requires_crawfish!r} but {installed} is installed",
+        )

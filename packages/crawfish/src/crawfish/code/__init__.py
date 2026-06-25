@@ -175,6 +175,7 @@ class ErrorCode(str, Enum):
     SIGNING_REQUIRED = "signing_required"
     CONSENT_REQUIRED = "consent_required"
     TREE_BUSY = "tree_busy"
+    PLUGIN_SKEW = "plugin_skew"
     INTERNAL = "internal"
 
 
@@ -202,6 +203,7 @@ CODE_EXIT: Mapping[ErrorCode, int] = {
     ErrorCode.SIGNING_REQUIRED: EXIT_SECURITY,
     ErrorCode.CONSENT_REQUIRED: EXIT_SECURITY,
     ErrorCode.TREE_BUSY: EXIT_EXPECTED_FAILURE,
+    ErrorCode.PLUGIN_SKEW: EXIT_EXPECTED_FAILURE,
     ErrorCode.INTERNAL: EXIT_USAGE,
 }
 

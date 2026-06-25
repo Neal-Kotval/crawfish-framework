@@ -105,11 +105,49 @@ def _definition_dirs(root: Path) -> list[Path]:
     )
 
 
+def _plugin_skew(root: Path) -> str | None:
+    """The pinned plugin's compat verdict against the installed crawfish (UNFILED-PIN).
+
+    Returns ``None`` when there is no plugin pin (nothing to check) or the pinned
+    ``requires_crawfish`` range admits the installed version. Returns a static, human
+    remediation string when the range **excludes** the installed version — the §12.3
+    plugin-not-lockstepped gap, surfaced fail-closed so a stale plugin can't teach rules the
+    framework no longer enforces.
+    """
+    from crawfish.code.plugin import (
+        installed_crawfish_version,
+        read_pin,
+        requires_satisfied_by,
+    )
+
+    pin = read_pin(root)
+    if pin is None:
+        return None
+    installed = installed_crawfish_version()
+    if requires_satisfied_by(pin.requires_crawfish, installed):
+        return None
+    return (
+        f"plugin bundle requires crawfish {pin.requires_crawfish!r} but {installed} is "
+        f"installed; re-pin with `craw code init --upgrade`"
+    )
+
+
 def _cmd_sync(args: argparse.Namespace) -> int:
     """Reconcile the tree: components + drift + load-errors + the assembly-gate precondition."""
     as_json: bool = getattr(args, "as_json", False)
     org: str = getattr(args, "org", "local")
     root = Path(args.dir)
+
+    # Plugin compat precondition (UNFILED-PIN): a pinned bundle whose requires_crawfish range
+    # excludes the installed version fails closed before the tree is declared runnable.
+    skew = _plugin_skew(root)
+    if skew is not None:
+        return emit_error(
+            ErrorCode.PLUGIN_SKEW,
+            retryable=True,  # recoverable: re-pin / align versions, then re-run
+            remediation=skew,
+            as_json=as_json,
+        )
 
     components = _components(root)
     drift, ledger = _drift_findings(root)

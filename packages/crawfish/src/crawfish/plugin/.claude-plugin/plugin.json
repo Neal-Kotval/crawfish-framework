@@ -1,0 +1,15 @@
+{
+  "name": "crawfish",
+  "description": "Knowledge and command ergonomics for authoring & operating a Crawfish project: the security spine (the prompt-injection boundary), the pipeline mental model, determinism discipline, and reading the ledger. The skills teach; the enforcement lives in the craw code verbs (assembly gate, consent re-gate, secret-shaped lint) and the jailed compile.",
+  "version": "0.3.0",
+  "author": {
+    "name": "Crawfish",
+    "url": "https://github.com/Neal-Kotval/crawfish"
+  },
+  "defaultEnabled": false,
+  "dependencies": {},
+  "metadata": {
+    "requires_crawfish": ">=0.3,<0.4",
+    "bundle_sha256": "<filled by `craw freeze` / `craw code init`; verified by `craw doctor`>"
+  }
+}

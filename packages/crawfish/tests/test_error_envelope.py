@@ -38,6 +38,7 @@ def test_code_is_a_closed_enum() -> None:
         ErrorCode.SIGNING_REQUIRED,
         ErrorCode.CONSENT_REQUIRED,
         ErrorCode.TREE_BUSY,
+        ErrorCode.PLUGIN_SKEW,
         ErrorCode.INTERNAL,
     }
 

@@ -38,6 +38,12 @@ On error, `--json` mode emits a `craw.error.v1` envelope on **stderr**:
 `retryable: false` — an injected agent must not retry past a security gate. `remediation`
 is a static string; fluid/tainted input never round-trips into it.
 
+`plugin_skew` (UNFILED-PIN) is a supply-chain **compat** finding, not a security
+rejection: `craw code sync` returns it (exit `1`, `retryable: true`) when the pinned plugin
+bundle's `requires_crawfish` range excludes the installed `crawfish` version. It is
+recoverable — re-pin/align versions (`craw code init --upgrade`) and re-run. A *tampered*
+bundle (digest mismatch) is surfaced separately by `craw doctor` (fail closed).
+
 ## Verb coverage (`craw code` family + the planes that feed it)
 
 | Verb | `--json` | Schema tag | Exit codes |
@@ -45,7 +51,7 @@ is a static string; fluid/tainted input never round-trips into it.
 | `craw code schema` | yes | `craw.code.schema.v1` | `0` |
 | `craw code describe` | yes (M1) | `craw.code.describe.v1` | `0`, `2`, `4` |
 | `craw code estimate` | yes (M1) | `craw.code.estimate.v1` | `0`, `3` |
-| `craw code run` / `sync` | yes (M1) | `craw.code.run.v1` / `…sync.v1` | `0`, `2`, `3`, `4` |
+| `craw code run` / `sync` | yes (M1) | `craw.code.run.v1` / `…sync.v1` | `0`, `1`, `2`, `3`, `4` |
 | `craw eval` / `tune` / `refine` / `learn` / `guard` | yes | `craw.<cmd>.v1` | `0`, `1` |
 | `craw replay` / `prove` | yes | `craw.replay.v1` / `craw.prove.v1` | `0`, `1` |
 
