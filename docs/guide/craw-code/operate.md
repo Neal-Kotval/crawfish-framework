@@ -13,7 +13,7 @@ all of it: optimization *proposes*, it never auto-promotes.
 
 !!! note "Operate-plane verbs"
     The verbs on this page (`optimize`, `deploy`, `fleet`, `cancel`, `resume`) are part of the
-    operate/HITL plane. They are documented here from the [operate spec](../../specs/craw-code/03-dashboard-operate-hitl.md);
+    operate/HITL plane. They are documented here, matching [RFC 0001](../../rfcs/0001-craw-code.md);
     if a verb is not yet registered in your build, `craw code --help` will tell you. The
     schemas and exit codes below match the spec.
 

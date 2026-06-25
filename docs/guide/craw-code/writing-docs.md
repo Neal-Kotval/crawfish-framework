@@ -97,4 +97,4 @@ preview/approval step first. This mirrors the test suite's rule: no live model c
 
 - [The craw code CLI](cli.md) — the verb reference these guides teach against
 - [Security model](security.md) — the trust-boundary collapse in depth
-- [`docs/dev/craw-code/00-ORCHESTRATION-LOG.md`](../../dev/craw-code/00-ORCHESTRATION-LOG.md) — how the build was structured
+- `docs/dev/craw-code/00-ORCHESTRATION-LOG.md` (in the repo) — how the build was structured

@@ -3,6 +3,13 @@ site_description: A programming language for agents. Write them as typed code, r
 site_url: https://neal-kotval.github.io/crawfish/
 docs_dir: docs
 
+# Internal, non-published trees: implementation specs (link to source files outside
+# docs_dir) and dev orchestration notes. Excluded from the built site so `mkdocs build
+# --strict` does not abort on their intentional source-code links.
+exclude_docs: |
+  specs/
+  dev/
+
 # Internal authoring notes, ADRs, roadmap, and product material live in /dev_docs
 # at the repo root. That folder is outside docs_dir, so it is never published.
 repo_url: https://github.com/Neal-Kotval/crawfish

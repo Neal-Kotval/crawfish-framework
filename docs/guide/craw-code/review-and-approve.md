@@ -13,7 +13,7 @@ not happen, even under permissive run modes.
 
 !!! note "HITL-plane verbs"
     The verbs on this page (`review`, `diagnose`, `propose`, `apply`) are part of the
-    operate/HITL plane, documented here from the [operate spec](../../specs/craw-code/03-dashboard-operate-hitl.md).
+    operate/HITL plane, documented here, matching [RFC 0001](../../rfcs/0001-craw-code.md).
     Check `craw code --help` for which are registered in your build; the schemas and exit
     codes below match the spec.
 
