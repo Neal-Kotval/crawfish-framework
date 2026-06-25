@@ -159,7 +159,9 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     from crawfish.build import assert_build_safe
     from crawfish.code.consent import regate_definition
     from crawfish.code.treelock import TreeBusy, TreeLock
-    from crawfish.definition import DefinitionLoadError, load_definition
+    from crawfish.definition import DefinitionLoadError
+    from crawfish.definition.jailed import load_definition_jailed
+    from crawfish.jail import SandboxPolicy
     from crawfish.manage import store_for_dir
     from crawfish.provenance import ConsentRequired
 
@@ -181,7 +183,14 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         try:
             for d in _definition_dirs(root):
                 try:
-                    definition = load_definition(d)
+                    # The project's own Definition dirs are agent-authored/untrusted under the
+                    # craw code threat model, so the compile-time import is JAILED (CRA-267):
+                    # project dir RO+STATIC, allow_net=False, a jail Denial fails closed as
+                    # DefinitionLoadError — a hostile tools/*.py never executes in-process.
+                    # Reuses the CRA-278 shared read lease's store/org (already in scope).
+                    definition = load_definition_jailed(
+                        d, store=store, org_id=org, policy=SandboxPolicy(kind="fake")
+                    ).definition
                 except DefinitionLoadError as exc:
                     load_errors.append(
                         {
