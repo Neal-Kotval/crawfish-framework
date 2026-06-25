@@ -1253,6 +1253,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dir", default=".", help="project directory to write .claude/ into")
     p.set_defaults(func=_cmd_export)
 
+    # -- craw code — the agent-authoring verb family (CRA-243/266..275) -----
+    # The ONLY place `craw code` is wired into the top-level CLI. The verb group is
+    # assembled by its own registry (crawfish.code.cli), and each verb self-registers as a
+    # sibling module — so a new verb is a new file, never an edit here.
+    from crawfish.code.cli import register_code_command
+
+    register_code_command(sub)
+
     # -- OPT-1 / CRA-219 — the optimization-plane CLI ----------------------
     p = sub.add_parser("eval", help="score a Definition against the benchmark + gate on baseline")
     _add_opt_args(p, path_kind="path")

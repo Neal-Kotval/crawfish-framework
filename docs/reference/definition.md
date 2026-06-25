@@ -85,9 +85,14 @@ instances in `mcp/*.py`), it checks every agent:
 
 An agent that declares no `tools` is given all available tools (local plus MCP), with no
 explicit wiring needed. Compiling imports `definition.py`, `policies/*.py`, and
-`tools/*.py`: this is authoring-time trusted code. Host-side tool code runs
-out-of-process at run time with taint propagation (untrusted fluid data is tracked as
-it flows), not here.
+`tools/*.py`: this is authoring-time trusted code **only when a human authored those
+files**. When the author is an agent (`craw code`), this trust no longer holds — the
+agent may have been steered by fluid (untrusted) data — so agent-authored components are
+provenance-stamped and their import is run in the jail (read-only project dir,
+network-denied, fails closed on any escape). See
+[ADR 0010](../architecture/decisions/0010-jailed-compile-agent-authored-code.md). Host-side
+tool code runs out-of-process at run time with taint propagation (untrusted fluid data is
+tracked as it flows), not here.
 
 !!! note "Good to know"
 

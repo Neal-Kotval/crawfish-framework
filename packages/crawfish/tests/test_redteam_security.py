@@ -72,3 +72,30 @@ def test_deterministic_offline() -> None:
     a = [(r.attack.name, r.blocked) for r in run_redteam()]
     b = [(r.attack.name, r.blocked) for r in run_redteam()]
     assert a == b
+
+
+# -- craw code (M0) — the agent-authoring fluid surfaces (CRA-266 / CRA-267) ----
+# craw code puts an LLM in the author's chair, so the authoring loop's *input* (the fluid
+# data that steered it) is a new fluid surface. Each must be refused by construction: a
+# file authored under fluid context is stamped tainted (CRA-266), and a poisoned tool whose
+# import-time code reaches the network is jailed + denied + fails closed (CRA-267).
+_CRAW_CODE_SURFACES = {"file_provenance", "jailed_compile"}
+
+
+def test_craw_code_surfaces_have_redteam_coverage() -> None:
+    """Each craw code authoring fluid surface carries at least one injection payload."""
+    surfaces = {a.surface for a in redteam_attacks()}
+    missing = _CRAW_CODE_SURFACES - surfaces
+    assert not missing, f"missing craw code red-team coverage for {missing}"
+
+
+@pytest.mark.parametrize(
+    "attack",
+    [a for a in redteam_attacks() if a.surface in _CRAW_CODE_SURFACES],
+    ids=lambda a: a.name,
+)
+def test_each_craw_code_injection_is_blocked(attack: RedTeamAttack) -> None:
+    """Every craw code authoring injection is refused by its named spine control."""
+    (result,) = run_redteam([attack])
+    assert result.blocked, f"craw code injection NOT blocked on {attack.name}: {result.how}"
+    assert result.how

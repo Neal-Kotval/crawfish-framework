@@ -1,0 +1,24 @@
+{
+  "authored_by": "craw-code",
+  "model_turns": [
+    "Author a new notify tool for the triage-bot definition.",
+    "Wire the typed inputs/outputs in definition.py."
+  ],
+  "files": [
+    {
+      "path": "instructions.md",
+      "content": "You triage support tickets.\n",
+      "source_tainted": false
+    },
+    {
+      "path": "tools/notify.py",
+      "content": "def notify(message):\n    return {\"sent\": message}\n",
+      "source_tainted": false
+    },
+    {
+      "path": "definition.py",
+      "content": "from crawfish.core.types import Flow, Parameter\ninputs = [Parameter(name='ticket', type='str', flow=Flow.FLUID)]\noutputs = [Parameter(name='label', type='str', flow=Flow.STATIC)]\n",
+      "source_tainted": false
+    }
+  ]
+}
