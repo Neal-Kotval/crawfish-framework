@@ -174,6 +174,12 @@ class ErrorCode(str, Enum):
     FLUID_TO_STATIC_SINK = "fluid_to_static_sink"
     SIGNING_REQUIRED = "signing_required"
     CONSENT_REQUIRED = "consent_required"
+    # M6 HITL gate (UNFILED-GATE): a consequential promotion/--live call with no recorded
+    # human approval, or one halted by the aggregate budget ceiling. Both are security
+    # rejections (an injected agent must not retry past them); the spec's granular 7/8 codes
+    # ride in the envelope ``detail["exit"]`` while the closed CRA-243 exit stays 4.
+    NO_APPROVAL = "no_approval"
+    CEILING_REACHED = "ceiling_reached"
     TREE_BUSY = "tree_busy"
     PLUGIN_SKEW = "plugin_skew"
     INTERNAL = "internal"
@@ -187,6 +193,8 @@ SECURITY_CODES: frozenset[ErrorCode] = frozenset(
         ErrorCode.SIGNING_REQUIRED,
         ErrorCode.CONSENT_REQUIRED,
         ErrorCode.SCHEMA_SKEW,
+        ErrorCode.NO_APPROVAL,
+        ErrorCode.CEILING_REACHED,
     }
 )
 
@@ -202,6 +210,8 @@ CODE_EXIT: Mapping[ErrorCode, int] = {
     ErrorCode.FLUID_TO_STATIC_SINK: EXIT_SECURITY,
     ErrorCode.SIGNING_REQUIRED: EXIT_SECURITY,
     ErrorCode.CONSENT_REQUIRED: EXIT_SECURITY,
+    ErrorCode.NO_APPROVAL: EXIT_SECURITY,
+    ErrorCode.CEILING_REACHED: EXIT_SECURITY,
     ErrorCode.TREE_BUSY: EXIT_EXPECTED_FAILURE,
     ErrorCode.PLUGIN_SKEW: EXIT_EXPECTED_FAILURE,
     ErrorCode.INTERNAL: EXIT_USAGE,
