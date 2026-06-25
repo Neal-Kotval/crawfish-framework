@@ -90,8 +90,18 @@ Updated as waves complete. See git log on `craw-code/integration` for the author
 | 4 | M4 dashboard — seam/XSS/cost + ADR 0011 (CRA-252/253/254, UNFILED-SEAM/XSS/COST) | `craw-code/m4` → merged | ✓ | ✓ 1592 passed | gated ✓ (all PASS; live XSS render proof) |
 | 5 | M4.5 operate — optimize/deploy/fleet/cancel/resume (UNFILED-OPTIMIZE/DEPLOY/CONTROL) | `craw-code/m45` → merged | ✓ | ✓ 1637 passed | gated ✓ (all PASS) |
 | 5 | M6 HITL — gate (propose/apply/reject) / review / diagnose (UNFILED-GATE/REVIEW/DIAGNOSE) | `craw-code/m6` → merged | ✓ | ✓ 1637 passed | gated ✓ (all PASS; adversarial approval-gate audit + live sha-binding proof) |
-| 6 | M5 MCP veneer (4 meta-tools over the CLI) | `craw-code/m5` | dispatched | — | — |
-| 6 | Demo (craw-code-tour) + live transcript + final integration | (orchestrator + demo agent) | dispatched | — | — |
+| 6 | M5 MCP veneer (4 meta-tools over the CLI) | `craw-code/m5` → merged `3bea9dd` | ✓ | ✓ 1650 passed | merged |
+| 6 | Demo (craw-code-tour) + live transcript + final integration | `craw-code/demo` → merged | ✓ | ✓ 1668 passed | merged |
+
+## BUILD COMPLETE
+
+All 6 waves merged to `craw-code/integration` and gated. **Final PR → `main`:
+https://github.com/Neal-Kotval/crawfish/pull/18** (56 commits, 0 behind main).
+
+- Full DoD green: **1668 passed, 1 skipped**, `ruff` + `ruff format` + `mypy --strict` clean, deterministic.
+- Live `claude -p` smoke test PASS — `demo/craw-code-tour/TRANSCRIPT.md` (agent-authored definition compiles jailed + passes the assembly gate).
+- 24 verbs · 3 ADRs (0010/0011/0012) · full docs section + nav (`mkdocs build` clean) · RFC §10 resolved · ROADMAP updated.
+- Issue→commit map + gate record + honest follow-ups: [`02-FINAL-SUMMARY.md`](02-FINAL-SUMMARY.md).
 
 **Wave 5 follow-up to fold into Wave 6:** sec-w5 noted the on-disk-sha-drift guard in `gate.py` (apply re-checks `content_sha()==approved sha`) has no dedicated test — add one in Wave 6.
 | docs | 9 guide+reference pages + mkdocs nav | `craw-code/docs` → merged | ✓ | ✓ (additive) | — |
