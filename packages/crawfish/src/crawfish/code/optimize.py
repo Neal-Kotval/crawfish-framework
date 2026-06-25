@@ -51,9 +51,13 @@ SCHEMA_VERSIONS.setdefault("code.optimize", (1, 0))  # type: ignore[attr-defined
 
 VERB_NAME = "optimize"
 
-#: ``optimize`` exit codes (the closed table over the CRA-243 base).
-EXIT_OVER_BUDGET = 4  # over budget before any trial could run
-EXIT_NO_BASELINE = 5  # no baseline could be seeded (the gate has nothing to compare to)
+#: ``optimize`` granular exit reasons. The PROCESS exit stays inside the foundation's
+#: closed 0-4 table (CRA-243) — these granular numbers ride in the envelope ``detail.exit``
+#: only (mirroring lint exit-6 → usage / adopt exit-9 → usage). Over-budget maps to the
+#: dedicated budget code (3), NOT a security rejection (4); a missing baseline is a
+#: setup/usage precondition failure (2).
+EXIT_OVER_BUDGET = 4  # granular detail.exit for an over-budget halt (process exit: EXIT_BUDGET=3)
+EXIT_NO_BASELINE = 5  # granular detail.exit for "no baseline seeded" (process exit: EXIT_USAGE=2)
 
 #: A reference-only ``tune.toml`` seed — declares a model knob domain, no secret/destination.
 _TUNE_TOML_TEMPLATE = (
@@ -340,24 +344,41 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
             runtime=_default_runtime_for_args(args),
         )
     except NoBaselineError:
-        emit_error(
-            ErrorCode.INTERNAL,
+        # A missing baseline is a setup/usage precondition failure: process exit EXIT_USAGE (2),
+        # with the granular exit-5 reason in the envelope detail (mirrors lint/adopt).
+        return emit_error(
+            ErrorCode.USAGE,
             remediation="No baseline could be seeded; the benchmark produced no scores.",
-            detail={"component": args.component},
+            detail={
+                "exit": EXIT_NO_BASELINE,
+                "reason": "no_baseline",
+                "component": args.component,
+            },
             as_json=as_json,
         )
-        return EXIT_NO_BASELINE
     finally:
         store.close()
+
+    # A budget-halted search is the responsibility gate — surfaced from the engine's
+    # ``stopped_reason``. The PROCESS exit is the dedicated budget code (EXIT_BUDGET=3, NOT a
+    # security rejection); the granular exit-4 reason rides in the envelope detail.
+    if body["stopped_reason"] == "budget":
+        return emit_error(
+            ErrorCode.BUDGET_EXCEEDED,
+            remediation="--budget ceiling halted the search before any trial; raise --budget.",
+            detail={
+                "exit": EXIT_OVER_BUDGET,
+                "reason": "budget",
+                "component": args.component,
+                "spent_usd": body["spent_usd"],
+            },
+            as_json=as_json,
+        )
 
     if as_json:
         emit_json("code.optimize", body, org=org)
     else:
         _print_human(body)
-    # Over budget before any trial ran is the responsibility gate (exit 4) — surfaced from
-    # the engine's ``stopped_reason`` rather than a stack trace.
-    if body["stopped_reason"] == "budget" and not body["metric_deltas"]:
-        return EXIT_OVER_BUDGET
     return EXIT_OK
 
 

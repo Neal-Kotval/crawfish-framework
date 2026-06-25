@@ -166,6 +166,48 @@ def test_over_budget_halts_with_budget_stopped_reason(tmp_path: Path) -> None:
     assert body["promoted"] is False
 
 
+def test_cli_over_budget_maps_to_budget_exit_within_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI over-budget halts with the foundation's EXIT_BUDGET (3), granular 4 in detail.exit."""
+    from crawfish.code import EXIT_BUDGET
+    from crawfish.code.cli import run_code
+    from crawfish.code.optimize import EXIT_OVER_BUDGET
+
+    comp = _component(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    rc = run_code(["optimize", comp, "--mode", "tune", "--seed", "7", "--budget", "0", "--json"])
+    # PROCESS exit stays inside the closed 0-4 table (budget code, NOT a security rejection).
+    assert rc == EXIT_BUDGET == 3
+    err = _json.loads(capsys.readouterr().err)
+    assert err["code"] == "budget_exceeded"
+    assert err["detail"]["exit"] == EXIT_OVER_BUDGET == 4  # granular code rides in detail.exit
+
+
+def test_cli_no_baseline_maps_to_usage_exit_within_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI no-baseline maps to the foundation's EXIT_USAGE (2), granular 5 in detail.exit."""
+    import crawfish.code.optimize as optimize_mod
+    from crawfish.code import EXIT_USAGE
+    from crawfish.code.cli import run_code
+    from crawfish.code.optimize import EXIT_NO_BASELINE
+
+    comp = _component(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    # Force an empty-rubric benchmark so the baseline cannot be seeded (the exit-5 precondition).
+    monkeypatch.setattr(
+        optimize_mod,
+        "_default_benchmark",
+        lambda definition: Benchmark(Rubric([]), [Task(description="a")]),
+    )
+    rc = run_code(["optimize", comp, "--mode", "tune", "--seed", "7", "--json"])
+    assert rc == EXIT_USAGE == 2  # within the closed 0-4 table
+    err = _json.loads(capsys.readouterr().err)
+    assert err["code"] == "usage"
+    assert err["detail"]["exit"] == EXIT_NO_BASELINE == 5  # granular code in detail.exit
+
+
 # -- determinism -------------------------------------------------------------
 def test_same_seed_proposes_the_same_winner(tmp_path: Path) -> None:
     """A fixed --seed ⇒ identical winner sha + stopped_reason (no stochastic leaf)."""

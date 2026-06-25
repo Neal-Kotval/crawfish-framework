@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from crawfish.code import (
+    EXIT_EXPECTED_FAILURE,
     EXIT_OK,
     SCHEMA_VERSIONS,
     ErrorCode,
@@ -47,9 +48,11 @@ SCHEMA_VERSIONS.setdefault("code.control", (1, 0))  # type: ignore[attr-defined]
 
 VERB_NAME = "control"  # module name; this file registers TWO verbs (cancel + resume)
 
-#: The run id is absent from this org's ledger/surface.
+#: The run id is absent from this org's ledger/surface (process exit, within the 0-4 table).
 EXIT_NO_SUCH_RUN = 1
-#: Cancel raced a run that already finished (a cooperative no-op, not a failure).
+#: Granular reason: cancel raced a run that already finished (a benign no-op). The PROCESS
+#: exit is the foundation's EXIT_EXPECTED_FAILURE (1); this granular 6 rides in the result
+#: body / envelope ``detail.exit`` only (mirrors lint exit-6 / adopt exit-9).
 EXIT_RACED_DONE = 6
 
 
@@ -103,8 +106,9 @@ def cancel_run(
     if info is None:
         raise NoSuchRun(run_id)
 
-    # A run that already terminated cannot be cancelled — surface the race as a no-op so an
-    # agent does not loop on it (exit 6).
+    # A run that already terminated cannot be cancelled — surface the race as a benign no-op so
+    # an agent does not loop on it. The PROCESS exit is EXIT_EXPECTED_FAILURE (1); the granular
+    # raced-done code (6) rides in ``detail.exit`` only (within the closed 0-4 table).
     if info.status in ("done", "failed", "cancelled"):
         return {
             "run_id": run_id,
@@ -113,6 +117,7 @@ def cancel_run(
             "items_replayed_free": 0,
             "items_remaining": 0,
             "recharged_usd": 0.0,
+            "detail": {"exit": EXIT_RACED_DONE, "reason": "raced_done"},
         }
 
     # In-process: set the caller's cooperative token (the only thing that touches a live run).
@@ -159,7 +164,8 @@ def _cmd_cancel(args: argparse.Namespace) -> int:
         emit_json("code.control", body, org=org)
     else:
         _print_human(body)
-    return EXIT_RACED_DONE if body["result"] == "raced_done" else EXIT_OK
+    # A raced cancel is a benign expected failure: process exit 1, granular 6 in detail.exit.
+    return EXIT_EXPECTED_FAILURE if body["result"] == "raced_done" else EXIT_OK
 
 
 # --------------------------------------------------------------------------- resume

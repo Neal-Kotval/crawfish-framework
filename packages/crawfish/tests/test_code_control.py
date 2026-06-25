@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from crawfish.code import EXIT_EXPECTED_FAILURE
 from crawfish.code.control import (
     EXIT_RACED_DONE,
     NoSuchRun,
@@ -83,6 +84,8 @@ def test_cancel_races_completed_run_is_noop(tmp_path: Path) -> None:
     )
     body = cancel_run("run-done", store=store, stop_supervisor=False)
     assert body["result"] == "raced_done"
+    # The granular raced-done code (6) rides in detail.exit; the process exit stays within 0-4.
+    assert body["detail"] == {"exit": EXIT_RACED_DONE, "reason": "raced_done"}
     store.close()
 
 
@@ -127,5 +130,7 @@ def test_cli_exit_codes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     Path(tmp_path / "ctl.db").rename(Path(".crawfish") / "crawfish.db")
 
     assert run_code(["resume", "run-1", "--json"]) == 0
-    assert run_code(["cancel", "run-done", "--json"]) == EXIT_RACED_DONE
+    # A raced cancel maps to the foundation's EXIT_EXPECTED_FAILURE (1); the granular
+    # raced-done code (EXIT_RACED_DONE=6) rides in the result body detail.exit, not the exit.
+    assert run_code(["cancel", "run-done", "--json"]) == EXIT_EXPECTED_FAILURE
     assert run_code(["resume", "missing", "--json"]) == 1
