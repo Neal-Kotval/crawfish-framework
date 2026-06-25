@@ -107,13 +107,13 @@ def _cmd_adopt(args: argparse.Namespace) -> int:
     # disjoint from the plugin's .claude/plugins/crawfish/, ADR 0012). Carries no secrets.
     exported: list[dict[str, str]] = []
     if not args.no_export:
-        exported = _export_definitions(root)
+        exported = _export_definitions(root, org)
 
     # (4) Validate: map (count nodes/sinks) + sync (assembly gate + load errors), reusing the
     # already-built verbs so adoption runs the same gates as the steady-state loop.
     from crawfish.code.map import build_map
 
-    map_body = build_map(root)
+    map_body = build_map(root, org)
     nodes = map_body.get("nodes", [])
     node_list = nodes if isinstance(nodes, list) else []
     consequential = sum(1 for n in node_list if isinstance(n, dict) and n.get("consequential"))
@@ -140,21 +140,40 @@ def _cmd_adopt(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _export_definitions(root: Path) -> list[dict[str, str]]:
-    """Run ``export_claude_code`` for each discovered Definition (export invariant: no secrets)."""
+def _export_definitions(root: Path, org: str = "local") -> list[dict[str, str]]:
+    """Run ``export_claude_code`` for each discovered Definition (export invariant: no secrets).
+
+    ``adopt`` runs over an EXISTING, UNTRUSTED project BEFORE any consent gate, so the
+    per-Definition compile MUST go through the jailed path (CRA-267): the project dir is
+    bound RO+STATIC, ``allow_net=False``, and any jail Denial fails closed
+    (:class:`DefinitionLoadError`) — a hostile ``tools/*.py`` with an import-time network
+    connect / file read never executes in the orchestrator (it is surfaced by ``sync``,
+    not exported). Mirrors :mod:`crawfish.code.describe` / ``estimate`` / ``harness``.
+    """
     from crawfish.ccexport import export_claude_code
-    from crawfish.definition import DefinitionLoadError, load_definition
+    from crawfish.definition import DefinitionLoadError
+    from crawfish.definition.jailed import load_definition_jailed
     from crawfish.discovery import Registry
+    from crawfish.jail import SandboxPolicy
+    from crawfish.manage import store_for_dir
 
     out: list[dict[str, str]] = []
     reg = Registry.discover(root)
-    for ref in reg.of_kind("definition"):
-        try:
-            definition = load_definition(ref.target)
-        except DefinitionLoadError:
-            continue  # a broken Definition is surfaced by sync, not exported
-        for path in export_claude_code(definition, root):
-            out.append({"definition": ref.name, "file": str(path.relative_to(root))})
+    # The jailed compile records CRA-266 provenance via the project Store (protocol-only).
+    (root / ".crawfish").mkdir(parents=True, exist_ok=True)
+    store = store_for_dir(str(root))
+    try:
+        for ref in reg.of_kind("definition"):
+            try:
+                compiled = load_definition_jailed(
+                    ref.target, store=store, org_id=org, policy=SandboxPolicy(kind="fake")
+                )
+            except DefinitionLoadError:
+                continue  # a broken / jailed-out Definition is surfaced by sync, not exported
+            for path in export_claude_code(compiled.definition, root):
+                out.append({"definition": ref.name, "file": str(path.relative_to(root))})
+    finally:
+        store.close()
     return out
 
 

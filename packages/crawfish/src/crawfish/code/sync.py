@@ -222,7 +222,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
                         remediation=f"definitions/{d.name} newly declares an MCP/secret "
                         f"capability; run `craw code grant definitions/{d.name} --yes` to "
                         "consent (generated capabilities are not auto-trusted)",
-                        detail={"exit": 3, "component": f"definitions/{d.name}"},
+                        detail={"exit": 4, "component": f"definitions/{d.name}"},
                         as_json=as_json,
                     )
         finally:

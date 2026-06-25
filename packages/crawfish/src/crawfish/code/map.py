@@ -120,30 +120,49 @@ def _sink_node(name: str) -> dict[str, object]:
     }
 
 
-def build_map(root: Path) -> dict[str, object]:
-    """Build the ``craw.code.map.v1`` body — pure reflection, redacted per CRA-271."""
-    from crawfish.definition import DefinitionLoadError, load_definition
+def build_map(root: Path, org: str = "local") -> dict[str, object]:
+    """Build the ``craw.code.map.v1`` body — pure reflection, redacted per CRA-271.
+
+    The per-Definition compile goes through the **jailed** path (CRA-267): ``map`` may run
+    over an existing, untrusted project, so importing a hostile ``tools/*.py`` in the
+    orchestrator is the exact host-execution hole the jail closes (project dir RO+STATIC,
+    ``allow_net=False``, a jail Denial fails closed). Mirrors ``describe`` / ``estimate``.
+    """
+    from crawfish.definition import DefinitionLoadError
+    from crawfish.definition.jailed import load_definition_jailed
     from crawfish.discovery import Registry
+    from crawfish.jail import SandboxPolicy
+    from crawfish.manage import store_for_dir
 
     reg = Registry.discover(root)
     nodes: list[dict[str, object]] = []
     edges: list[dict[str, object]] = []
     lineage: dict[str, list[str]] = {}
 
-    # Definition nodes (flow-tagged typed IO) + their DefinitionRef dependency edges.
-    for ref in reg.of_kind("definition"):
-        try:
-            definition = load_definition(ref.target)
-        except DefinitionLoadError:
-            # A load error is surfaced by `sync`, not here; map skips the broken node so the
-            # orientation read never crashes on a half-written component.
-            continue
-        nodes.append(_definition_node(definition, ref.name))
-        lineage[ref.name] = [str(definition.version)]
-        for dep in getattr(definition, "dependencies", []) or []:
-            edges.append(
-                {"from": f"definition:{ref.name}", "to": f"definition:{dep.id}", "via": "dep"}
-            )
+    # The jailed compile records CRA-266 provenance via the project Store (protocol-only).
+    (root / ".crawfish").mkdir(parents=True, exist_ok=True)
+    store = store_for_dir(str(root))
+    try:
+        # Definition nodes (flow-tagged typed IO) + their DefinitionRef dependency edges.
+        for ref in reg.of_kind("definition"):
+            try:
+                compiled = load_definition_jailed(
+                    ref.target, store=store, org_id=org, policy=SandboxPolicy(kind="fake")
+                )
+            except DefinitionLoadError:
+                # A load error (or a jailed-out hostile import) is surfaced by `sync`, not
+                # here; map skips the broken node so the orientation read never crashes on a
+                # half-written component and the authored code never executes unjailed.
+                continue
+            definition = compiled.definition
+            nodes.append(_definition_node(definition, ref.name))
+            lineage[ref.name] = [str(definition.version)]
+            for dep in getattr(definition, "dependencies", []) or []:
+                edges.append(
+                    {"from": f"definition:{ref.name}", "to": f"definition:{dep.id}", "via": "dep"}
+                )
+    finally:
+        store.close()
 
     # Sink nodes (consequential, redacted target) + a generic definition→sink wiring edge.
     sink_names = sorted(r.name for r in reg.of_kind("sink"))
@@ -201,7 +220,7 @@ def _cmd_map(args: argparse.Namespace) -> int:
     if cache_file.exists():
         body: dict[str, object] = json.loads(cache_file.read_text())
     else:
-        body = build_map(root)
+        body = build_map(root, org)
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_text(json.dumps(body, sort_keys=True))
 

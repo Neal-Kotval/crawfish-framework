@@ -146,20 +146,12 @@ def _cmd_grant(args: argparse.Namespace) -> int:
             as_json=as_json,
         )
 
-    from crawfish.definition import DefinitionLoadError, load_definition
+    from crawfish.definition import DefinitionLoadError
+    from crawfish.definition.jailed import load_definition_jailed
+    from crawfish.jail import SandboxPolicy
     from crawfish.manage import store_for_dir
     from crawfish.provenance import ConsentRequired
     from crawfish.secrets import AutoConsent
-
-    try:
-        definition = load_definition(component)
-    except DefinitionLoadError as exc:
-        return emit_error(
-            ErrorCode.COMPILE_ERROR,
-            remediation="the component failed to compile; fix it before granting",
-            detail={"component": args.component, "message": str(exc)},
-            as_json=as_json,
-        )
 
     # --yes is the explicit human approval (AutoConsent); without it, default-deny.
     decider: ConsentDecider | None = AutoConsent() if args.yes else None
@@ -169,6 +161,21 @@ def _cmd_grant(args: argparse.Namespace) -> int:
     (project_root / ".crawfish").mkdir(parents=True, exist_ok=True)
     store = store_for_dir(str(project_root))
     try:
+        # The component is agent-authorable and re-gating it imports its code at compile time,
+        # so the compile goes through the **jailed** path (CRA-267): project dir RO+STATIC,
+        # ``allow_net=False``, a jail Denial fails closed (DefinitionLoadError) — a hostile
+        # ``tools/*.py`` never executes unjailed in the orchestrator. Mirrors describe/estimate.
+        try:
+            definition = load_definition_jailed(
+                component, store=store, org_id=org, policy=SandboxPolicy(kind="fake")
+            ).definition
+        except DefinitionLoadError as exc:
+            return emit_error(
+                ErrorCode.COMPILE_ERROR,
+                remediation="the component failed to compile; fix it before granting",
+                detail={"component": args.component, "message": str(exc)},
+                as_json=as_json,
+            )
         try:
             granted = regate_definition(definition, store=store, org_id=org, decider=decider)
         except ConsentRequired:
