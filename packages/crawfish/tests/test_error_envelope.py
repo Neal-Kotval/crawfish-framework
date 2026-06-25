@@ -37,6 +37,8 @@ def test_code_is_a_closed_enum() -> None:
         ErrorCode.FLUID_TO_STATIC_SINK,
         ErrorCode.SIGNING_REQUIRED,
         ErrorCode.CONSENT_REQUIRED,
+        ErrorCode.NO_APPROVAL,
+        ErrorCode.CEILING_REACHED,
         ErrorCode.TREE_BUSY,
         ErrorCode.PLUGIN_SKEW,
         ErrorCode.INTERNAL,
@@ -51,13 +53,17 @@ def test_every_security_rejection_is_non_retryable(code: ErrorCode) -> None:
     assert env.exit_code == EXIT_SECURITY
 
 
-def test_security_codes_set_is_the_expected_five() -> None:
+def test_security_codes_set_is_the_expected_set() -> None:
     assert SECURITY_CODES == {
         ErrorCode.JAIL_VIOLATION,
         ErrorCode.FLUID_TO_STATIC_SINK,
         ErrorCode.SIGNING_REQUIRED,
         ErrorCode.CONSENT_REQUIRED,
         ErrorCode.SCHEMA_SKEW,
+        # M6 HITL gate (UNFILED-GATE): an un-approved promotion or a ceiling halt is a security
+        # rejection — an injected agent must not be able to retry past it.
+        ErrorCode.NO_APPROVAL,
+        ErrorCode.CEILING_REACHED,
     }
 
 
