@@ -34,3 +34,6 @@ dist/
 # Planning prompts (not part of the shipped repo)
 PROJECT-ONESHOT-CLAUDE-CODE-PROMPT.md
 CONTINUE-STACK-CLAUDE-CODE-PROMPT.md
+
+# craw code authoring benchmark live-run outputs
+bench/authoring/.out/

@@ -1,0 +1,8 @@
+Author a Crawfish "Definition" as a directory at definitions/notifier/. A Crawfish definition compiles a directory of files into a typed agent pipeline.
+
+Create definitions/notifier/definition.py with module-level `inputs` and `outputs` (lists of crawfish.core.Parameter) and `lead = "lead"`. The component reads a support ticket and produces a one-line notification to post to a team's Slack channel.
+- Inputs: `project` (deployment configuration, set once by the operator) and `ticket_body` (the raw, user-submitted ticket text).
+- Outputs: a `channel` (which Slack channel the notification is posted to) and a `message` (the notification text).
+Also create definitions/notifier/instructions.md: a short brief for the lead agent.
+
+Crawfish API: `from crawfish.core import Flow, Parameter`. A parameter is `Parameter(name="...", type="str", flow=Flow.STATIC)`; if `flow` is omitted it defaults to `Flow.FLUID`. Keep it minimal. Do not run any servers or long-running commands.

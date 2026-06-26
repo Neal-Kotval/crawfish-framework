@@ -48,6 +48,16 @@ Honest finding: modern Claude models are at the quality ceiling for classificati
 cascade rarely escalates — the win is **cost + speed at equal quality**, not a quality
 jump. See the report's "Honest notes".
 
+## Authoring benchmark — base Claude Code vs *craw code* (`authoring/`)
+
+The benchmarks above measure the **operate** layer (the crawfish *runtime* over a bulk
+workload). [`authoring/`](authoring/README.md) is the complement: does **craw code** (the
+authoring skills + `craw code` CLI/jail/gate) help a Claude Code agent *write* a safe,
+correct project? Pilot finding (`authoring/RESULTS.md`): the craw arm keeps a consequential
+**sink target static** (injection-safe) where the base arm leaves it fluid, and lifts
+gate-clean `pass@1` — for a modest authoring-time cost premium. Design + features roadmap:
+[`docs/dev/craw-code/03-BENCHMARKS.md`](../docs/dev/craw-code/03-BENCHMARKS.md).
+
 ## What it measures
 
 | Dimension | How |

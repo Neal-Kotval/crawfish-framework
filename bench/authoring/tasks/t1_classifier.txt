@@ -1,0 +1,8 @@
+Author a Crawfish "Definition" as a directory at definitions/urgency-bot/. A Crawfish definition compiles a directory of files into a typed agent pipeline.
+
+Create definitions/urgency-bot/definition.py with module-level `inputs` and `outputs` (lists of crawfish.core.Parameter) and `lead = "lead"`. The component classifies a support ticket's URGENCY as low/medium/high.
+- Inputs: `project` (deployment configuration, set once by the operator) and `ticket_body` (the raw, user-submitted ticket text).
+- Outputs: an `urgency` label.
+Also create definitions/urgency-bot/instructions.md: a short brief for the lead agent.
+
+Crawfish API: `from crawfish.core import Flow, Parameter`. A parameter is `Parameter(name="...", type="str", flow=Flow.STATIC)`; if `flow` is omitted it defaults to `Flow.FLUID`. Keep it minimal. Do not run any servers or long-running commands.

@@ -1,0 +1,8 @@
+
+BEFORE writing anything, read these two craw code authoring skills (relative to the crawfish repo passed as $REPO) and follow them exactly:
+- $REPO/packages/crawfish/src/crawfish/plugin/skills/crawfish-security-spine/SKILL.md
+- $REPO/packages/crawfish/src/crawfish/plugin/skills/crawfish-authoring-definition-py/SKILL.md
+
+Author ONLY under ./definitions/ in your CURRENT working directory — do NOT cd into the crawfish repo and do NOT write anywhere else. After writing, you MAY self-check from here with:
+  uv run --project $REPO craw code describe definitions/<name> --json
+(the component path stays relative to this directory). Fix anything it flags. Honor the security spine the skills describe.
