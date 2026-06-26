@@ -59,6 +59,88 @@ craw dev my-app/definitions/triage-bot -i project=acme -i "ticket_body=login is 
 A team of agents runs on a mock runtime — no API key, no cost — and the result comes back
 typed. Swap in `claude -p` for a real run; it's a runtime change, not a code change.
 
+## A quick look
+
+An agent is a **directory**, not a prompt string. The directory compiles to a typed
+`Definition`: its inputs and outputs are declared as `Parameter`s, and a `Flow` tag marks
+whether a value is trusted config or untrusted session data — the heart of the security model.
+
+```text
+definitions/triage-bot/
+├── definition.py        # the typed IO boundary (below)
+├── instructions.md      # the lead agent's brief
+└── agents/
+    ├── classifier.md     # a sub-agent (front-matter declares its role)
+    └── summarizer.md
+```
+
+```python
+# definitions/triage-bot/definition.py
+from crawfish.core import Flow, Parameter
+
+inputs = [
+    Parameter(name="project", type="str", flow=Flow.STATIC),   # trusted config
+    Parameter(name="ticket_body", type="str"),                  # default Flow.FLUID — untrusted
+]
+
+# The model's analysis is a fluid output — that's fine, it's data. The security rule bites
+# elsewhere: a *consequential sink target or idempotency key* must be Flow.STATIC, so a fluid
+# value can never steer where a write lands. The assembly gate (ALG-3) proves this at build
+# time, and fluid input always reaches the model as data, never as instructions.
+outputs = [Parameter(name="triage", type="str")]                # default Flow.FLUID
+
+lead = "lead"
+```
+
+Load it in Python and you get a typed `Definition` you can inspect, freeze, diff, and
+assert on — no live model needed:
+
+```python
+from crawfish import load_definition
+
+defn = load_definition("definitions/triage-bot")   # compiles the directory to a typed Definition
+for p in defn.inputs:
+    print(p.name, p.type, p.flow.value)            # project str static · ticket_body str fluid
+```
+
+Run it from the CLI with `craw dev …` (above) on a mock runtime, or drive `run_team(...)`
+from Python for full control. Because the IO is typed and versioned, you can `diff` two
+versions, `replay` a past run for `$0`, score it against a golden set, and let the tuner
+promote a better version — all from the CLI. See the
+[tutorial](https://crawfishai.github.io/crawfish/guide/tutorial/).
+
+## craw code — let an agent build and run it for you
+
+[**craw code**](https://crawfishai.github.io/crawfish/guide/craw-code/) lets an LLM agent
+(in Claude Code) **author and operate** a Crawfish project for you — and it's the same
+trust model, *enforced*. When a model writes the code, that code is no longer trusted just
+because it was authored: it's **provenance-stamped**, **jailed at compile** (agent-authored
+code never executes in your shell), and **gated before it can go live** behind a fail-closed
+human approval step. The CLI is the one execution path; a Claude Code plugin (authoring
+skills + slash commands) is the ergonomics; a loopback-only, scrubbed dashboard is the read
+surface.
+
+It ships in the same package:
+
+```bash
+pip install crawfish
+craw code init my-app                      # scaffold a project + ledger + Claude Code plugin
+
+# …an agent in Claude Code now authors definitions using the craw code skills…
+
+craw code describe my-app/definitions/triage-bot   # typed reflection via a jailed compile
+craw code sync --dir my-app                 # assembly gate: fluid→static-sink rejected, lock regenerated
+craw code estimate my-app/definitions/triage-bot --items 100   # cost preview, no model call
+craw code dashboard --project my-app         # scrubbed, loopback ledger view
+craw code propose … && craw code apply …     # nothing goes live without a recorded human approval
+```
+
+Every verb speaks `--json` with a stable schema and a small, closed set of exit codes, so an
+agent can drive the whole loop over Bash and branch on the result. Read the
+[craw code overview](https://crawfishai.github.io/crawfish/guide/craw-code/),
+[security model](https://crawfishai.github.io/crawfish/guide/craw-code/security/), and
+[CLI reference](https://crawfishai.github.io/crawfish/guide/craw-code/cli/).
+
 ## Develop from source
 
 This repo is a [`uv`](https://docs.astral.sh/uv/) workspace and uses
@@ -79,6 +161,8 @@ welcome first contribution is a connector.
 📖 **Full documentation: [crawfishai.github.io/crawfish](https://crawfishai.github.io/crawfish/)**
 
 - [Getting started](https://crawfishai.github.io/crawfish/guide/getting-started/) — install and run your first agent in minutes
+- [Tutorial](https://crawfishai.github.io/crawfish/guide/tutorial/) — build the triage bot end to end
+- [craw code](https://crawfishai.github.io/crawfish/guide/craw-code/) — let an agent author and operate a project, safely
 - [Reference](https://crawfishai.github.io/crawfish/reference/) — every public symbol, explained, with runnable examples
 - [Architecture](docs/architecture/ARCHITECTURE.md) — the three swappable seams · [ADRs](docs/architecture/decisions)
 - [Security](docs/architecture/SECURITY.md) — the prompt-injection boundary, secrets, and taint
